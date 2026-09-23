@@ -1,23 +1,425 @@
 #include <efi.h>
 #include <efilib.h>
 
-EFI_STATUS
-efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
-{
-    InitializeLib(ImageHandle, SystemTable);
+#include <stdint.h>
 
+/*
+ * Minimal ELF64 definitions
+ */
+
+#define EI_NIDENT 16
+
+#define ELF_MAGIC0 0x7f
+#define ELF_MAGIC1 'E'
+#define ELF_MAGIC2 'L'
+#define ELF_MAGIC3 'F'
+
+#define ELFCLASS64 2
+#define ELFDATA2LSB 1
+
+#define ET_EXEC 2
+#define EM_X86_64 62
+
+#define PT_LOAD 1
+
+typedef struct {
+    unsigned char e_ident[EI_NIDENT];
+
+    uint16_t e_type;
+    uint16_t e_machine;
+    uint32_t e_version;
+
+    uint64_t e_entry;
+    uint64_t e_phoff;
+    uint64_t e_shoff;
+
+    uint32_t e_flags;
+
+    uint16_t e_ehsize;
+    uint16_t e_phentsize;
+    uint16_t e_phnum;
+
+    uint16_t e_shentsize;
+    uint16_t e_shnum;
+    uint16_t e_shstrndx;
+} Elf64_Ehdr;
+
+
+typedef struct {
+    uint32_t p_type;
+    uint32_t p_flags;
+
+    uint64_t p_offset;
+    uint64_t p_vaddr;
+    uint64_t p_paddr;
+
+    uint64_t p_filesz;
+    uint64_t p_memsz;
+
+    uint64_t p_align;
+} Elf64_Phdr;
+
+
+/*
+ * Print an EFI status and halt.
+ */
+static void
+fatal(const CHAR16 *message, EFI_STATUS status)
+{
+    Print(L"[ERROR] ");
+    Print(message);
     Print(L"\r\n");
-    Print(L"================================\r\n");
-    Print(L"        Libai UEFI Boot\r\n");
-    Print(L"================================\r\n");
-    Print(L"\r\n");
-    Print(L"M0.1 boot successful.\r\n");
-    Print(L"Hello from Libai!\r\n");
-    Print(L"\r\n");
+
+    Print(L"        EFI_STATUS = %r\r\n", status);
 
     while (1) {
         __asm__ volatile ("hlt");
     }
+}
+
+
+/*
+ * Wait forever.
+ */
+static void
+halt(void)
+{
+    while (1) {
+        __asm__ volatile ("hlt");
+    }
+}
+
+
+EFI_STATUS
+efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
+{
+    EFI_STATUS status;
+
+    InitializeLib(ImageHandle, SystemTable);
+
+    Print(L"\r\n");
+    Print(L"================================\r\n");
+    Print(L"        Libai EFI Loader\r\n");
+    Print(L"================================\r\n");
+    Print(L"\r\n");
+
+    Print(L"[M0.2] Libai EFI Loader started.\r\n");
+    Print(L"\r\n");
+
+
+    /*
+     * ------------------------------------------------------------
+     * Step 1: Get Loaded Image Protocol
+     * ------------------------------------------------------------
+     */
+
+    EFI_LOADED_IMAGE *LoadedImage = NULL;
+
+    status = uefi_call_wrapper(
+        BS->HandleProtocol,
+        3,
+        ImageHandle,
+        &LoadedImageProtocol,
+        (void **)&LoadedImage
+    );
+
+    if (EFI_ERROR(status)) {
+        fatal(L"HandleProtocol(LoadedImage) failed.", status);
+    }
+
+    Print(L"[M0.2] Loaded Image Protocol OK.\r\n");
+
+
+    /*
+     * ------------------------------------------------------------
+     * Step 2: Get Simple File System Protocol
+     * ------------------------------------------------------------
+     */
+
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *FileSystem = NULL;
+
+    status = uefi_call_wrapper(
+        BS->HandleProtocol,
+        3,
+        LoadedImage->DeviceHandle,
+        &FileSystemProtocol,
+        (void **)&FileSystem
+    );
+
+    if (EFI_ERROR(status)) {
+        fatal(L"HandleProtocol(FileSystem) failed.", status);
+    }
+
+    Print(L"[M0.2] Simple File System Protocol OK.\r\n");
+
+
+    /*
+     * ------------------------------------------------------------
+     * Step 3: Open ESP root directory
+     * ------------------------------------------------------------
+     */
+
+    EFI_FILE_HANDLE Root = NULL;
+
+    status = uefi_call_wrapper(
+        FileSystem->OpenVolume,
+        2,
+        FileSystem,
+        &Root
+    );
+
+    if (EFI_ERROR(status)) {
+        fatal(L"OpenVolume() failed.", status);
+    }
+
+    Print(L"[M0.2] ESP root opened.\r\n");
+
+
+    /*
+     * ------------------------------------------------------------
+     * Step 4: Open kernel ELF
+     * ------------------------------------------------------------
+     */
+
+    EFI_FILE_HANDLE KernelFile = NULL;
+
+    status = uefi_call_wrapper(
+        Root->Open,
+        5,
+        Root,
+        &KernelFile,
+        L"\\libai-kernel.elf",
+        EFI_FILE_MODE_READ,
+        0
+    );
+
+    if (EFI_ERROR(status)) {
+        fatal(L"Cannot open \\libai-kernel.elf", status);
+    }
+
+    Print(L"[M0.2] Found: \\libai-kernel.elf\r\n");
+
+
+    /*
+     * ------------------------------------------------------------
+     * Step 5: Get file size
+     * ------------------------------------------------------------
+     */
+
+    UINTN FileInfoSize = 0;
+
+    status = uefi_call_wrapper(
+        KernelFile->GetInfo,
+        4,
+        KernelFile,
+        &gEfiFileInfoGuid,
+        &FileInfoSize,
+        NULL
+    );
+
+    if (status != EFI_BUFFER_TOO_SMALL) {
+        fatal(L"GetInfo(size query) failed.", status);
+    }
+
+    EFI_FILE_INFO *FileInfo = NULL;
+
+    status = uefi_call_wrapper(
+        BS->AllocatePool,
+        3,
+        EfiLoaderData,
+        FileInfoSize,
+        (void **)&FileInfo
+    );
+
+    if (EFI_ERROR(status)) {
+        fatal(L"AllocatePool(FileInfo) failed.", status);
+    }
+
+    status = uefi_call_wrapper(
+        KernelFile->GetInfo,
+        4,
+        KernelFile,
+        &gEfiFileInfoGuid,
+        &FileInfoSize,
+        FileInfo
+    );
+
+    if (EFI_ERROR(status)) {
+        fatal(L"GetInfo() failed.", status);
+    }
+
+    UINTN KernelSize = (UINTN)FileInfo->FileSize;
+
+    Print(L"[M0.2] Kernel size: %lu bytes\r\n", KernelSize);
+
+
+    /*
+     * ------------------------------------------------------------
+     * Step 6: Allocate memory and read entire ELF
+     * ------------------------------------------------------------
+     */
+
+    void *KernelBuffer = NULL;
+
+    status = uefi_call_wrapper(
+        BS->AllocatePool,
+        3,
+        EfiLoaderData,
+        KernelSize,
+        &KernelBuffer
+    );
+
+    if (EFI_ERROR(status)) {
+        fatal(L"AllocatePool(KernelBuffer) failed.", status);
+    }
+
+    UINTN ReadSize = KernelSize;
+
+    status = uefi_call_wrapper(
+        KernelFile->Read,
+        3,
+        KernelFile,
+        &ReadSize,
+        KernelBuffer
+    );
+
+    if (EFI_ERROR(status)) {
+        fatal(L"Read(kernel ELF) failed.", status);
+    }
+
+    if (ReadSize != KernelSize) {
+        Print(L"[ERROR] Short read.\r\n");
+        halt();
+    }
+
+    Print(L"[M0.2] Kernel ELF loaded into temporary buffer.\r\n");
+
+
+    /*
+     * ------------------------------------------------------------
+     * Step 7: Validate ELF header
+     * ------------------------------------------------------------
+     */
+
+    if (KernelSize < sizeof(Elf64_Ehdr)) {
+        Print(L"[ERROR] File too small for ELF64 header.\r\n");
+        halt();
+    }
+
+    Elf64_Ehdr *ehdr = (Elf64_Ehdr *)KernelBuffer;
+
+    if (ehdr->e_ident[0] != ELF_MAGIC0 ||
+        ehdr->e_ident[1] != ELF_MAGIC1 ||
+        ehdr->e_ident[2] != ELF_MAGIC2 ||
+        ehdr->e_ident[3] != ELF_MAGIC3) {
+
+        Print(L"[ERROR] Invalid ELF magic.\r\n");
+        halt();
+    }
+
+    if (ehdr->e_ident[4] != ELFCLASS64) {
+        Print(L"[ERROR] ELF is not 64-bit.\r\n");
+        halt();
+    }
+
+    if (ehdr->e_ident[5] != ELFDATA2LSB) {
+        Print(L"[ERROR] ELF is not little-endian.\r\n");
+        halt();
+    }
+
+    if (ehdr->e_machine != EM_X86_64) {
+        Print(L"[ERROR] ELF architecture is not x86-64.\r\n");
+        halt();
+    }
+
+    if (ehdr->e_type != ET_EXEC) {
+        Print(L"[ERROR] ELF is not an executable.\r\n");
+        halt();
+    }
+
+    Print(L"\r\n");
+    Print(L"[M0.2] ELF64 detected.\r\n");
+
+    Print(L"[M0.2] Entry: 0x%lx\r\n", ehdr->e_entry);
+
+    Print(
+        L"[M0.2] Program Headers: %u\r\n",
+        ehdr->e_phnum
+    );
+
+
+    /*
+     * ------------------------------------------------------------
+     * Step 8: Validate Program Header table
+     * ------------------------------------------------------------
+     */
+
+    UINT64 ph_end =
+        ehdr->e_phoff +
+        ((UINT64)ehdr->e_phnum * ehdr->e_phentsize);
+
+    if (ph_end > KernelSize) {
+        Print(L"[ERROR] Program Header table outside ELF.\r\n");
+        halt();
+    }
+
+
+    /*
+     * ------------------------------------------------------------
+     * Step 9: Parse PT_LOAD segments
+     * ------------------------------------------------------------
+     */
+
+    for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
+
+        Elf64_Phdr *phdr =
+            (Elf64_Phdr *)(
+                (uint8_t *)KernelBuffer +
+                ehdr->e_phoff +
+                ((UINT64)i * ehdr->e_phentsize)
+            );
+
+        if (phdr->p_type != PT_LOAD) {
+            continue;
+        }
+
+        Print(L"\r\n");
+        Print(L"[M0.2] PT_LOAD #%u:\r\n", i);
+
+        Print(L"        Offset : 0x%lx\r\n", phdr->p_offset);
+        Print(L"        VAddr  : 0x%lx\r\n", phdr->p_vaddr);
+        Print(L"        PAddr  : 0x%lx\r\n", phdr->p_paddr);
+        Print(L"        FileSz : 0x%lx\r\n", phdr->p_filesz);
+        Print(L"        MemSz  : 0x%lx\r\n", phdr->p_memsz);
+        Print(L"        Flags  : 0x%x\r\n", phdr->p_flags);
+        Print(L"        Align  : 0x%lx\r\n", phdr->p_align);
+    }
+
+
+    /*
+     * ------------------------------------------------------------
+     * M0.2 completed.
+     *
+     * IMPORTANT:
+     *
+     * We intentionally DO NOT:
+     *
+     *   - ExitBootServices()
+     *   - copy PT_LOAD segments to p_paddr
+     *   - zero .bss
+     *   - jump to e_entry
+     *
+     * Those belong to later stages.
+     * ------------------------------------------------------------
+     */
+
+    Print(L"\r\n");
+    Print(L"================================\r\n");
+    Print(L"[M0.2] ELF parsing successful.\r\n");
+    Print(L"[M0.2] Kernel is NOT started yet.\r\n");
+    Print(L"================================\r\n");
+
+    halt();
 
     return EFI_SUCCESS;
 }
