@@ -370,31 +370,105 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
      * ------------------------------------------------------------
      */
 
-    for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
 
-        Elf64_Phdr *phdr =
-            (Elf64_Phdr *)(
-                (uint8_t *)KernelBuffer +
-                ehdr->e_phoff +
-                ((UINT64)i * ehdr->e_phentsize)
-            );
+	UINTN LoadSegmentCount = 0;
 
-        if (phdr->p_type != PT_LOAD) {
-            continue;
-        }
-
-        Print(L"\r\n");
-        Print(L"[M0.2] PT_LOAD #%u:\r\n", i);
-
-        Print(L"        Offset : 0x%lx\r\n", phdr->p_offset);
-        Print(L"        VAddr  : 0x%lx\r\n", phdr->p_vaddr);
-        Print(L"        PAddr  : 0x%lx\r\n", phdr->p_paddr);
-        Print(L"        FileSz : 0x%lx\r\n", phdr->p_filesz);
-        Print(L"        MemSz  : 0x%lx\r\n", phdr->p_memsz);
-        Print(L"        Flags  : 0x%x\r\n", phdr->p_flags);
-        Print(L"        Align  : 0x%lx\r\n", phdr->p_align);
-    }
-
+	for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
+	
+	    Elf64_Phdr *phdr =
+	        (Elf64_Phdr *)(
+	            (uint8_t *)KernelBuffer +
+	            ehdr->e_phoff +
+	            ((UINT64)i * ehdr->e_phentsize)
+	        );
+	
+	    if (phdr->p_type != PT_LOAD) {
+	        continue;
+	    }
+	
+	    Print(L"\r\n");
+	    Print(L"[M0.2] PT_LOAD #%u:\r\n", i);
+	
+	    Print(L"        Offset : 0x%lx\r\n", phdr->p_offset);
+	    Print(L"        VAddr  : 0x%lx\r\n", phdr->p_vaddr);
+	    Print(L"        PAddr  : 0x%lx\r\n", phdr->p_paddr);
+	    Print(L"        FileSz : 0x%lx\r\n", phdr->p_filesz);
+	    Print(L"        MemSz  : 0x%lx\r\n", phdr->p_memsz);
+	    Print(L"        Flags  : 0x%x\r\n", phdr->p_flags);
+	    Print(L"        Align  : 0x%lx\r\n", phdr->p_align);
+	
+	    /*
+	     * --------------------------------------------------------
+	     * Validate p_filesz <= p_memsz
+	     * --------------------------------------------------------
+	     */
+	
+	    if (phdr->p_filesz > phdr->p_memsz) {
+	        Print(L"[ERROR] PT_LOAD FileSz > MemSz.\r\n");
+	        halt();
+	    }
+	
+	
+	    /*
+	     * --------------------------------------------------------
+	     * Validate file range:
+	     *
+	     * p_offset + p_filesz <= KernelSize
+	     *
+	     * Avoid integer overflow.
+	     * --------------------------------------------------------
+	     */
+	
+	    if (phdr->p_offset > KernelSize) {
+	        Print(L"[ERROR] PT_LOAD offset outside ELF.\r\n");
+	        halt();
+	    }
+	
+	    if (phdr->p_filesz > KernelSize - phdr->p_offset) {
+	        Print(L"[ERROR] PT_LOAD file range outside ELF.\r\n");
+	        halt();
+	    }
+	
+	
+	    /*
+	     * --------------------------------------------------------
+	     * Validate memory range:
+	     *
+	     * p_vaddr + p_memsz must not overflow uint64_t.
+	     * --------------------------------------------------------
+	     */
+	
+	    if (phdr->p_vaddr > UINT64_MAX - phdr->p_memsz) {
+	        Print(L"[ERROR] PT_LOAD memory range overflow.\r\n");
+	        halt();
+	    }
+	
+	
+	    /*
+	     * --------------------------------------------------------
+	     * Basic alignment validation.
+	     * --------------------------------------------------------
+	     */
+	
+	    if (phdr->p_align != 0 &&
+	        (phdr->p_align & (phdr->p_align - 1)) != 0) {
+	
+	        Print(L"[ERROR] PT_LOAD alignment is not power-of-two.\r\n");
+	        halt();
+	    }
+	
+	
+	    LoadSegmentCount++;
+	}
+	
+	if (LoadSegmentCount == 0) {
+	    Print(L"[ERROR] No PT_LOAD segment found.\r\n");
+	    halt();
+	}
+	
+	Print(L"\r\n");
+	Print(L"[M0.2] PT_LOAD validation successful.\r\n");
+	Print(L"[M0.2] Loadable segments: %lu\r\n", LoadSegmentCount);
 
     /*
      * ------------------------------------------------------------
