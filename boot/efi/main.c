@@ -1,11 +1,17 @@
 #include <efi.h>
 #include <efilib.h>
-#include <stddef.h>
 
 #include <stdint.h>
 
 /*
- * Minimal ELF64 definitions
+ * M0.3.4 Libai EFI Loader
+ *
+ * UEFI -> open ESP -> parse ELF64 -> load PT_LOAD
+ *      -> verify image -> GetMemoryMap -> ExitBootServices
+ *      -> jump to libai_kernel_entry at 0x100000
+ *
+ * After ExitBootServices(): no Print(), no AllocatePool(),
+ * no filesystem, no EFI protocols.
  */
 
 #define EI_NIDENT 16
@@ -45,7 +51,6 @@ typedef struct {
     uint16_t e_shstrndx;
 } Elf64_Ehdr;
 
-
 typedef struct {
     uint32_t p_type;
     uint32_t p_flags;
@@ -60,17 +65,12 @@ typedef struct {
     uint64_t p_align;
 } Elf64_Phdr;
 
-
-/*
- * Print an EFI status and halt.
- */
 static void
 fatal(const CHAR16 *message, EFI_STATUS status)
 {
     Print(L"[ERROR] ");
     Print(message);
     Print(L"\r\n");
-
     Print(L"        EFI_STATUS = %r\r\n", status);
 
     while (1) {
@@ -78,10 +78,6 @@ fatal(const CHAR16 *message, EFI_STATUS status)
     }
 }
 
-
-/*
- * Wait forever.
- */
 static void
 halt(void)
 {
@@ -89,7 +85,6 @@ halt(void)
         __asm__ volatile ("hlt");
     }
 }
-
 
 EFI_STATUS
 efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
@@ -107,13 +102,11 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     Print(L"[M0.2] Libai EFI Loader started.\r\n");
     Print(L"\r\n");
 
-
     /*
      * ------------------------------------------------------------
      * Step 1: Get Loaded Image Protocol
      * ------------------------------------------------------------
      */
-
     EFI_LOADED_IMAGE *LoadedImage = NULL;
 
     status = uefi_call_wrapper(
@@ -130,13 +123,11 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     Print(L"[M0.2] Loaded Image Protocol OK.\r\n");
 
-
     /*
      * ------------------------------------------------------------
      * Step 2: Get Simple File System Protocol
      * ------------------------------------------------------------
      */
-
     EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *FileSystem = NULL;
 
     status = uefi_call_wrapper(
@@ -153,13 +144,11 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     Print(L"[M0.2] Simple File System Protocol OK.\r\n");
 
-
     /*
      * ------------------------------------------------------------
      * Step 3: Open ESP root directory
      * ------------------------------------------------------------
      */
-
     EFI_FILE_HANDLE Root = NULL;
 
     status = uefi_call_wrapper(
@@ -175,13 +164,11 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     Print(L"[M0.2] ESP root opened.\r\n");
 
-
     /*
      * ------------------------------------------------------------
      * Step 4: Open kernel ELF
      * ------------------------------------------------------------
      */
-
     EFI_FILE_HANDLE KernelFile = NULL;
 
     status = uefi_call_wrapper(
@@ -200,13 +187,11 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     Print(L"[M0.2] Found: \\libai-kernel.elf\r\n");
 
-
     /*
      * ------------------------------------------------------------
      * Step 5: Get file size
      * ------------------------------------------------------------
      */
-
     UINTN FileInfoSize = 0;
 
     status = uefi_call_wrapper(
@@ -253,13 +238,11 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     Print(L"[M0.2] Kernel size: %lu bytes\r\n", KernelSize);
 
-
     /*
      * ------------------------------------------------------------
      * Step 6: Allocate memory and read entire ELF
      * ------------------------------------------------------------
      */
-
     void *KernelBuffer = NULL;
 
     status = uefi_call_wrapper(
@@ -295,13 +278,11 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     Print(L"[M0.2] Kernel ELF loaded into temporary buffer.\r\n");
 
-
     /*
      * ------------------------------------------------------------
      * Step 7: Validate ELF header
      * ------------------------------------------------------------
      */
-
     if (KernelSize < sizeof(Elf64_Ehdr)) {
         Print(L"[ERROR] File too small for ELF64 header.\r\n");
         halt();
@@ -313,7 +294,6 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         ehdr->e_ident[1] != ELF_MAGIC1 ||
         ehdr->e_ident[2] != ELF_MAGIC2 ||
         ehdr->e_ident[3] != ELF_MAGIC3) {
-
         Print(L"[ERROR] Invalid ELF magic.\r\n");
         halt();
     }
@@ -340,21 +320,14 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     Print(L"\r\n");
     Print(L"[M0.2] ELF64 detected.\r\n");
-
     Print(L"[M0.2] Entry: 0x%lx\r\n", ehdr->e_entry);
-
-    Print(
-        L"[M0.2] Program Headers: %u\r\n",
-        ehdr->e_phnum
-    );
-
+    Print(L"[M0.2] Program Headers: %u\r\n", ehdr->e_phnum);
 
     /*
      * ------------------------------------------------------------
      * Step 8: Validate Program Header table
      * ------------------------------------------------------------
      */
-
     UINT64 ph_end =
         ehdr->e_phoff +
         ((UINT64)ehdr->e_phnum * ehdr->e_phentsize);
@@ -364,17 +337,14 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         halt();
     }
 
-
     /*
      * ------------------------------------------------------------
-     * Step 9: Parse PT_LOAD segments
+     * M0.3.1: load every PT_LOAD into physical memory
      * ------------------------------------------------------------
      */
-
     UINTN LoadSegmentCount = 0;
 
     for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
-
         Elf64_Phdr *phdr =
             (Elf64_Phdr *)(
                 (uint8_t *)KernelBuffer +
@@ -397,13 +367,6 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         Print(L"        Flags  : 0x%x\r\n", phdr->p_flags);
         Print(L"        Align  : 0x%lx\r\n", phdr->p_align);
 
-
-        /*
-        * --------------------------------------------------------
-        * Validation
-        * --------------------------------------------------------
-        */
-
         if (phdr->p_filesz > phdr->p_memsz) {
             Print(L"[ERROR] FileSz > MemSz.\r\n");
             halt();
@@ -424,28 +387,13 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             halt();
         }
 
-
-        /*
-        * --------------------------------------------------------
-        * Calculate page-aligned destination
-        * --------------------------------------------------------
-        */
-
         UINT64 PageSize = 0x1000;
-
         UINT64 SegmentStart = phdr->p_vaddr;
         UINT64 SegmentEnd = phdr->p_vaddr + phdr->p_memsz;
-
-        UINT64 PageStart =
-            SegmentStart & ~(PageSize - 1);
-
+        UINT64 PageStart = SegmentStart & ~(PageSize - 1);
         UINT64 PageEnd =
-            (SegmentEnd + PageSize - 1) &
-            ~(PageSize - 1);
-
-        UINT64 PageCount =
-            (PageEnd - PageStart) / PageSize;
-
+            (SegmentEnd + PageSize - 1) & ~(PageSize - 1);
+        UINT64 PageCount = (PageEnd - PageStart) / PageSize;
 
         if (PageCount == 0) {
             Print(L"[ERROR] PT_LOAD requires zero pages.\r\n");
@@ -455,16 +403,6 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         Print(L"        PageStart: 0x%lx\r\n", PageStart);
         Print(L"        PageEnd  : 0x%lx\r\n", PageEnd);
         Print(L"        Pages    : %lu\r\n", PageCount);
-
-
-        /*
-        * --------------------------------------------------------
-        * Allocate physical pages.
-        *
-        * For M0.3.1 we deliberately request the exact address
-        * described by p_paddr.
-        * --------------------------------------------------------
-        */
 
         EFI_PHYSICAL_ADDRESS LoadAddress =
             (EFI_PHYSICAL_ADDRESS)PageStart;
@@ -485,20 +423,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         }
 
         Print(L"        Allocated at: 0x%lx\r\n",
-            (UINT64)LoadAddress);
-
-
-        /*
-        * --------------------------------------------------------
-        * Zero the entire memory image first.
-        *
-        * This guarantees that the area corresponding to:
-        *
-        *     p_memsz - p_filesz
-        *
-        * is zero.
-        * --------------------------------------------------------
-        */
+              (UINT64)LoadAddress);
 
         SetMem(
             (void *)(UINTN)PageStart,
@@ -506,23 +431,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             0
         );
 
-
-        /*
-        * --------------------------------------------------------
-        * Copy file-backed portion.
-        *
-        * Destination:
-        *
-        *     p_vaddr
-        *
-        * Source:
-        *
-        *     KernelBuffer + p_offset
-        * --------------------------------------------------------
-        */
-
         if (phdr->p_filesz > 0) {
-
             CopyMem(
                 (void *)(UINTN)phdr->p_vaddr,
                 (uint8_t *)KernelBuffer + phdr->p_offset,
@@ -530,25 +439,12 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             );
         }
 
-        Print(L"        Copied : %lu bytes\r\n",
-            phdr->p_filesz);
-
+        Print(L"        Copied : %lu bytes\r\n", phdr->p_filesz);
         Print(L"        Zeroed  : %lu bytes\r\n",
-            phdr->p_memsz - phdr->p_filesz);
-
-
-        /*
-        * --------------------------------------------------------
-        * Verify the first bytes of the loaded segment.
-        *
-        * This is temporary diagnostic code.
-        * --------------------------------------------------------
-        */
+              phdr->p_memsz - phdr->p_filesz);
 
         if (phdr->p_filesz >= 4) {
-
-            uint8_t *Loaded =
-                (uint8_t *)(UINTN)phdr->p_vaddr;
+            uint8_t *Loaded = (uint8_t *)(UINTN)phdr->p_vaddr;
 
             Print(
                 L"        Memory  : %02x %02x %02x %02x\r\n",
@@ -560,10 +456,8 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         }
 
         Print(L"[M0.3.1] PT_LOAD loaded successfully.\r\n");
-
         LoadSegmentCount++;
     }
-
 
     if (LoadSegmentCount == 0) {
         Print(L"[ERROR] No PT_LOAD segment found.\r\n");
@@ -571,8 +465,17 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     }
 
     Print(L"\r\n");
-    Print(L"[M0.3.2] All PT_LOAD segments loaded.\r\n");
+    Print(L"[M0.3.1] All PT_LOAD segments loaded.\r\n");
+    Print(L"[M0.3.1] Loadable segments: %lu\r\n",
+          LoadSegmentCount);
+    Print(L"[M0.3.1] Kernel entry remains: 0x%lx\r\n",
+          ehdr->e_entry);
 
+    /*
+     * ------------------------------------------------------------
+     * M0.3.2: verify the loaded kernel image
+     * ------------------------------------------------------------
+     */
     Print(L"\r\n");
     Print(L"[M0.3.2] Verifying loaded kernel image...\r\n");
 
@@ -593,15 +496,9 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         Print(L"\r\n");
         Print(L"[M0.3.2] Verifying PT_LOAD #%u\r\n", i);
 
-        /*
-        * ------------------------------------------------------------
-        * 1. Verify file-backed portion
-        * ------------------------------------------------------------
-        */
         if (phdr->p_filesz > 0) {
             uint8_t *Loaded =
                 (uint8_t *)(UINTN)phdr->p_vaddr;
-
             uint8_t *Expected =
                 (uint8_t *)KernelBuffer + phdr->p_offset;
 
@@ -609,8 +506,10 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
                 if (Loaded[j] != Expected[j]) {
                     Print(L"[ERROR] Loaded image mismatch.\r\n");
                     Print(L"        Offset = 0x%lx\r\n", j);
-                    Print(L"        Expected = 0x%02x\r\n", Expected[j]);
-                    Print(L"        Actual   = 0x%02x\r\n", Loaded[j]);
+                    Print(L"        Expected = 0x%02x\r\n",
+                          Expected[j]);
+                    Print(L"        Actual   = 0x%02x\r\n",
+                          Loaded[j]);
                     halt();
                 }
             }
@@ -623,11 +522,6 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             Print(L"        File-backed data: 0 bytes\r\n");
         }
 
-        /*
-        * ------------------------------------------------------------
-        * 2. Verify zero-filled portion
-        * ------------------------------------------------------------
-        */
         UINT64 ZeroSize = phdr->p_memsz - phdr->p_filesz;
 
         if (ZeroSize > 0) {
@@ -640,7 +534,8 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
                 if (ZeroArea[j] != 0) {
                     Print(L"[ERROR] Zero-filled area is not zero.\r\n");
                     Print(L"        Offset = 0x%lx\r\n", j);
-                    Print(L"        Actual  = 0x%02x\r\n", ZeroArea[j]);
+                    Print(L"        Actual  = 0x%02x\r\n",
+                          ZeroArea[j]);
                     halt();
                 }
             }
@@ -653,11 +548,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             Print(L"        Zero-filled data: 0 bytes\r\n");
         }
 
-        Print(
-            L"[M0.3.2] PT_LOAD #%u verification OK.\r\n",
-            i
-        );
-
+        Print(L"[M0.3.2] PT_LOAD #%u verification OK.\r\n", i);
         VerifySegmentCount++;
     }
 
@@ -668,29 +559,29 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     Print(L"\r\n");
     Print(L"[M0.3.2] Kernel image verification successful.\r\n");
-    Print(
-        L"[M0.3.2] Verified PT_LOAD segments: %lu\r\n",
-        VerifySegmentCount
-    );
-
+    Print(L"[M0.3.2] Verified PT_LOAD segments: %lu\r\n",
+          VerifySegmentCount);
     Print(L"\r\n");
     Print(L"[M0.3.2] Kernel is still NOT started.\r\n");
 
     /*
-    * ============================================================
-    * M0.3.3
-    * GetMemoryMap() + ExitBootServices()
-    * ============================================================
-    */
+     * ============================================================
+     * M0.3.3 + M0.3.4
+     *
+     * Save the kernel entry first.
+     * Print everything we still need.
+     * Then: GetMemoryMap -> ExitBootServices -> jump.
+     *
+     * Nothing that can change the memory map is allowed
+     * between the FINAL GetMemoryMap() and ExitBootServices().
+     * ============================================================
+     */
+    UINT64 KernelEntry = ehdr->e_entry;
 
     Print(L"\r\n");
     Print(L"[M0.3.3] Preparing to exit UEFI Boot Services...\r\n");
-
-    /*
-    * ------------------------------------------------------------
-    * 1. Query required memory map size
-    * ------------------------------------------------------------
-    */
+    Print(L"[M0.3.4] Kernel entry: 0x%lx\r\n", KernelEntry);
+    Print(L"[M0.3.4] Will jump after ExitBootServices().\r\n");
 
     UINTN MemoryMapSize = 0;
     EFI_MEMORY_DESCRIPTOR *MemoryMap = NULL;
@@ -718,20 +609,10 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         L"[M0.3.3] Required memory map size: %lu bytes\r\n",
         MemoryMapSize
     );
-
     Print(
         L"[M0.3.3] Descriptor size: %lu bytes\r\n",
         DescriptorSize
     );
-
-    /*
-    * ------------------------------------------------------------
-    * 2. Allocate memory map buffer
-    *
-    * Add some extra space because AllocatePool() itself may
-    * change the memory map.
-    * ------------------------------------------------------------
-    */
 
     UINTN MemoryMapBufferSize =
         MemoryMapSize + (DescriptorSize * 16);
@@ -756,16 +637,8 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     );
 
     /*
-    * ------------------------------------------------------------
-    * 3. Get the FINAL memory map
-    *
-    * IMPORTANT:
-    * After this call, do not allocate/free memory or perform
-    * other operations that may change the memory map before
-    * ExitBootServices().
-    * ------------------------------------------------------------
-    */
-
+     * Last chance to use Print().
+     */
     Print(L"[M0.3.3] Getting final memory map...\r\n");
     Print(L"[M0.3.3] Calling ExitBootServices() immediately after.\r\n");
     Print(L"[M0.3.3] No more console output after this point.\r\n");
@@ -795,15 +668,11 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         MapKey
     );
 
-
-
     /*
-    * ------------------------------------------------------------
-    * 4. Exit Boot Services
-    * ------------------------------------------------------------
-    */
-
-
+     * After the first ExitBootServices() attempt:
+     * only GetMemoryMap() + ExitBootServices() are allowed.
+     * Do not Print() here.
+     */
     if (status == EFI_INVALID_PARAMETER) {
         MemoryMapSize = MemoryMapBufferSize;
 
@@ -817,7 +686,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             &DescriptorVersion
         );
 
-        if (EFI_ERROR(status)) {
+        if (!EFI_ERROR(status)) {
             status = uefi_call_wrapper(
                 BS->ExitBootServices,
                 2,
@@ -828,28 +697,25 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     }
 
     if (EFI_ERROR(status)) {
-        /*
-        * Still legal: ExitBootServices() did not succeed,
-        * so Boot Services / Print() may still work.
-        */
-
         Print(L"[ERROR] ExitBootServices() failed.\r\n");
         Print(L"        EFI_STATUS = %r\r\n", status);
         halt();
     }
 
     /*
-    * SUCCESS.
-    * Boot Services are gone.
-    * Do not call Print() / AllocatePool() / protocols.
-    */
+     * SUCCESS. Boot Services are gone.
+     * M0.3.4: jump to the loaded kernel. Reuse the UEFI stack.
+     */
+    __asm__ volatile ("cli");
+
+    typedef void (*LibaiKernelEntry)(void);
+    LibaiKernelEntry entry = (LibaiKernelEntry)(UINTN)KernelEntry;
+
+    entry();
 
     for (;;) {
         __asm__ volatile ("hlt");
     }
 
-    halt();
-
     return EFI_SUCCESS;
 }
-
