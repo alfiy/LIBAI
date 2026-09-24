@@ -571,15 +571,107 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     }
 
     Print(L"\r\n");
-    Print(L"[M0.3.1] All PT_LOAD segments loaded.\r\n");
-    Print(L"[M0.3.1] Loadable segments: %lu\r\n",
-        LoadSegmentCount);
+    Print(L"[M0.3.2] Verifying loaded kernel image...\r\n");
 
-    Print(L"[M0.3.1] Kernel entry remains: 0x%lx\r\n",
-        ehdr->e_entry);
+    UINTN VerifySegmentCount = 0;
+
+    for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
+        Elf64_Phdr *phdr =
+            (Elf64_Phdr *)(
+                (uint8_t *)KernelBuffer +
+                ehdr->e_phoff +
+                ((UINT64)i * ehdr->e_phentsize)
+            );
+
+        if (phdr->p_type != PT_LOAD) {
+            continue;
+        }
+
+        Print(L"\r\n");
+        Print(L"[M0.3.2] Verifying PT_LOAD #%u\r\n", i);
+
+        /*
+        * ------------------------------------------------------------
+        * 1. Verify file-backed portion
+        * ------------------------------------------------------------
+        */
+        if (phdr->p_filesz > 0) {
+            uint8_t *Loaded =
+                (uint8_t *)(UINTN)phdr->p_vaddr;
+
+            uint8_t *Expected =
+                (uint8_t *)KernelBuffer + phdr->p_offset;
+
+            for (UINT64 j = 0; j < phdr->p_filesz; j++) {
+                if (Loaded[j] != Expected[j]) {
+                    Print(L"[ERROR] Loaded image mismatch.\r\n");
+                    Print(L"        Offset = 0x%lx\r\n", j);
+                    Print(L"        Expected = 0x%02x\r\n", Expected[j]);
+                    Print(L"        Actual   = 0x%02x\r\n", Loaded[j]);
+                    halt();
+                }
+            }
+
+            Print(
+                L"        File-backed data verified: %lu bytes\r\n",
+                phdr->p_filesz
+            );
+        } else {
+            Print(L"        File-backed data: 0 bytes\r\n");
+        }
+
+        /*
+        * ------------------------------------------------------------
+        * 2. Verify zero-filled portion
+        * ------------------------------------------------------------
+        */
+        UINT64 ZeroSize = phdr->p_memsz - phdr->p_filesz;
+
+        if (ZeroSize > 0) {
+            uint8_t *ZeroArea =
+                (uint8_t *)(UINTN)(
+                    phdr->p_vaddr + phdr->p_filesz
+                );
+
+            for (UINT64 j = 0; j < ZeroSize; j++) {
+                if (ZeroArea[j] != 0) {
+                    Print(L"[ERROR] Zero-filled area is not zero.\r\n");
+                    Print(L"        Offset = 0x%lx\r\n", j);
+                    Print(L"        Actual  = 0x%02x\r\n", ZeroArea[j]);
+                    halt();
+                }
+            }
+
+            Print(
+                L"        Zero-filled data verified: %lu bytes\r\n",
+                ZeroSize
+            );
+        } else {
+            Print(L"        Zero-filled data: 0 bytes\r\n");
+        }
+
+        Print(
+            L"[M0.3.2] PT_LOAD #%u verification OK.\r\n",
+            i
+        );
+
+        VerifySegmentCount++;
+    }
+
+    if (VerifySegmentCount == 0) {
+        Print(L"[ERROR] No PT_LOAD segment verified.\r\n");
+        halt();
+    }
 
     Print(L"\r\n");
-    Print(L"[M0.3.1] Kernel is still NOT started.\r\n");
+    Print(L"[M0.3.2] Kernel image verification successful.\r\n");
+    Print(
+        L"[M0.3.2] Verified PT_LOAD segments: %lu\r\n",
+        VerifySegmentCount
+    );
+
+    Print(L"\r\n");
+    Print(L"[M0.3.2] Kernel is still NOT started.\r\n");
 
     halt();
 
