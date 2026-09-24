@@ -6,10 +6,10 @@
 /*
  * Bootloader <-> Kernel contract.
  *
- * Magic "LIBA":
- *   0x4C 0x49 0x42 0x41
+ * Magic "LIBAI":
+ *   0x4C 0x49 0x42 0x41 0x49
  */
-#define LIBAI_BOOTINFO_MAGIC 0x4C494241u
+#define LIBAI_BOOTINFO_MAGIC 0x4C49424149ull
 
 typedef struct {
     uint64_t address;
