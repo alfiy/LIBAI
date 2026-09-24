@@ -571,6 +571,9 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     }
 
     Print(L"\r\n");
+    Print(L"[M0.3.2] All PT_LOAD segments loaded.\r\n");
+
+    Print(L"\r\n");
     Print(L"[M0.3.2] Verifying loaded kernel image...\r\n");
 
     UINTN VerifySegmentCount = 0;
@@ -672,6 +675,178 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     Print(L"\r\n");
     Print(L"[M0.3.2] Kernel is still NOT started.\r\n");
+
+    /*
+    * ============================================================
+    * M0.3.3
+    * GetMemoryMap() + ExitBootServices()
+    * ============================================================
+    */
+
+    Print(L"\r\n");
+    Print(L"[M0.3.3] Preparing to exit UEFI Boot Services...\r\n");
+
+    /*
+    * ------------------------------------------------------------
+    * 1. Query required memory map size
+    * ------------------------------------------------------------
+    */
+
+    UINTN MemoryMapSize = 0;
+    EFI_MEMORY_DESCRIPTOR *MemoryMap = NULL;
+    UINTN MapKey = 0;
+    UINTN DescriptorSize = 0;
+    UINT32 DescriptorVersion = 0;
+
+    status = uefi_call_wrapper(
+        BS->GetMemoryMap,
+        5,
+        &MemoryMapSize,
+        MemoryMap,
+        &MapKey,
+        &DescriptorSize,
+        &DescriptorVersion
+    );
+
+    if (status != EFI_BUFFER_TOO_SMALL) {
+        Print(L"[ERROR] GetMemoryMap() first call failed.\r\n");
+        Print(L"        EFI_STATUS = %r\r\n", status);
+        halt();
+    }
+
+    Print(
+        L"[M0.3.3] Required memory map size: %lu bytes\r\n",
+        MemoryMapSize
+    );
+
+    Print(
+        L"[M0.3.3] Descriptor size: %lu bytes\r\n",
+        DescriptorSize
+    );
+
+    /*
+    * ------------------------------------------------------------
+    * 2. Allocate memory map buffer
+    *
+    * Add some extra space because AllocatePool() itself may
+    * change the memory map.
+    * ------------------------------------------------------------
+    */
+
+    UINTN MemoryMapBufferSize =
+        MemoryMapSize + (DescriptorSize * 16);
+
+    status = uefi_call_wrapper(
+        BS->AllocatePool,
+        3,
+        EfiLoaderData,
+        MemoryMapBufferSize,
+        (void **)&MemoryMap
+    );
+
+    if (EFI_ERROR(status) || MemoryMap == NULL) {
+        Print(L"[ERROR] AllocatePool() for memory map failed.\r\n");
+        Print(L"        EFI_STATUS = %r\r\n", status);
+        halt();
+    }
+
+    Print(
+        L"[M0.3.3] Memory map buffer allocated: %lu bytes\r\n",
+        MemoryMapBufferSize
+    );
+
+    /*
+    * ------------------------------------------------------------
+    * 3. Get the FINAL memory map
+    *
+    * IMPORTANT:
+    * After this call, do not allocate/free memory or perform
+    * other operations that may change the memory map before
+    * ExitBootServices().
+    * ------------------------------------------------------------
+    */
+
+    Print(L"[M0.3.3] Getting final memory map...\r\n");
+    Print(L"[M0.3.3] Calling ExitBootServices() immediately after.\r\n");
+    Print(L"[M0.3.3] No more console output after this point.\r\n");
+
+    MemoryMapSize = MemoryMapBufferSize;
+
+    status = uefi_call_wrapper(
+        BS->GetMemoryMap,
+        5,
+        &MemoryMapSize,
+        MemoryMap,
+        &MapKey,
+        &DescriptorSize,
+        &DescriptorVersion
+    );
+
+    if (EFI_ERROR(status)) {
+        Print(L"[ERROR] GetMemoryMap() final call failed.\r\n");
+        Print(L"        EFI_STATUS = %r\r\n", status);
+        halt();
+    }
+
+    status = uefi_call_wrapper(
+        BS->ExitBootServices,
+        2,
+        ImageHandle,
+        MapKey
+    );
+
+
+
+    /*
+    * ------------------------------------------------------------
+    * 4. Exit Boot Services
+    * ------------------------------------------------------------
+    */
+
+
+    if (status == EFI_INVALID_PARAMETER) {
+        MemoryMapSize = MemoryMapBufferSize;
+
+        status = uefi_call_wrapper(
+            BS->GetMemoryMap,
+            5,
+            &MemoryMapSize,
+            MemoryMap,
+            &MapKey,
+            &DescriptorSize,
+            &DescriptorVersion
+        );
+
+        if (EFI_ERROR(status)) {
+            status = uefi_call_wrapper(
+                BS->ExitBootServices,
+                2,
+                ImageHandle,
+                MapKey
+            );
+        }
+    }
+
+    if (EFI_ERROR(status)) {
+        /*
+        * Still legal: ExitBootServices() did not succeed,
+        * so Boot Services / Print() may still work.
+        */
+
+        Print(L"[ERROR] ExitBootServices() failed.\r\n");
+        Print(L"        EFI_STATUS = %r\r\n", status);
+        halt();
+    }
+
+    /*
+    * SUCCESS.
+    * Boot Services are gone.
+    * Do not call Print() / AllocatePool() / protocols.
+    */
+
+    for (;;) {
+        __asm__ volatile ("hlt");
+    }
 
     halt();
 
