@@ -3,12 +3,15 @@
 
 #include <stdint.h>
 
+#include "bootinfo.h"
+
 /*
- * M0.3.4 Libai EFI Loader
+ * M0.4 Libai EFI Loader
  *
  * UEFI -> open ESP -> parse ELF64 -> load PT_LOAD
- *      -> verify image -> GetMemoryMap -> ExitBootServices
- *      -> jump to libai_kernel_entry at 0x100000
+ *      -> verify image -> fill LibaiBootInfo
+ *      -> GetMemoryMap -> ExitBootServices
+ *      -> jump to kernel with BootInfo * in rdi
  *
  * After ExitBootServices(): no Print(), no AllocatePool(),
  * no filesystem, no EFI protocols.
@@ -566,22 +569,42 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     /*
      * ============================================================
-     * M0.3.3 + M0.3.4
+     * M0.4
      *
-     * Save the kernel entry first.
-     * Print everything we still need.
-     * Then: GetMemoryMap -> ExitBootServices -> jump.
-     *
-     * Nothing that can change the memory map is allowed
-     * between the FINAL GetMemoryMap() and ExitBootServices().
+     * Allocate BootInfo BEFORE the final GetMemoryMap().
+     * Filling pointers after ExitBootServices() is fine:
+     * that is ordinary memory write, not a Boot Service.
      * ============================================================
      */
     UINT64 KernelEntry = ehdr->e_entry;
+    LibaiBootInfo *BootInfo = NULL;
+
+    status = uefi_call_wrapper(
+        BS->AllocatePool,
+        3,
+        EfiLoaderData,
+        sizeof(LibaiBootInfo),
+        (void **)&BootInfo
+    );
+
+    if (EFI_ERROR(status) || BootInfo == NULL) {
+        Print(L"[ERROR] AllocatePool(BootInfo) failed.\r\n");
+        Print(L"        EFI_STATUS = %r\r\n", status);
+        halt();
+    }
+
+    SetMem(BootInfo, sizeof(LibaiBootInfo), 0);
+    BootInfo->magic = LIBAI_BOOTINFO_MAGIC;
+    BootInfo->kernel_entry = KernelEntry;
 
     Print(L"\r\n");
+    Print(L"[M0.4] BootInfo allocated at: 0x%lx\r\n",
+          (UINT64)(UINTN)BootInfo);
+    Print(L"[M0.4] BootInfo magic: 0x%lx\r\n",
+          (UINT64)BootInfo->magic);
     Print(L"[M0.3.3] Preparing to exit UEFI Boot Services...\r\n");
     Print(L"[M0.3.4] Kernel entry: 0x%lx\r\n", KernelEntry);
-    Print(L"[M0.3.4] Will jump after ExitBootServices().\r\n");
+    Print(L"[M0.4] Will pass BootInfo* in rdi after EBS.\r\n");
 
     UINTN MemoryMapSize = 0;
     EFI_MEMORY_DESCRIPTOR *MemoryMap = NULL;
@@ -704,14 +727,21 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     /*
      * SUCCESS. Boot Services are gone.
-     * M0.3.4: jump to the loaded kernel. Reuse the UEFI stack.
+     *
+     * Writing into BootInfo is allowed: the pool is already
+     * allocated and now belongs to the OS loader.
      */
+    BootInfo->memory_map = (uint64_t)(UINTN)MemoryMap;
+    BootInfo->memory_map_size = (uint64_t)MemoryMapSize;
+    BootInfo->memory_map_descriptor_size = (uint64_t)DescriptorSize;
+    BootInfo->memory_map_descriptor_version = DescriptorVersion;
+
     __asm__ volatile ("cli");
 
-    typedef void (*LibaiKernelEntry)(void);
+    typedef void (*LibaiKernelEntry)(LibaiBootInfo *);
     LibaiKernelEntry entry = (LibaiKernelEntry)(UINTN)KernelEntry;
 
-    entry();
+    entry(BootInfo);
 
     for (;;) {
         __asm__ volatile ("hlt");
