@@ -1,5 +1,6 @@
 #include <efi.h>
 #include <efilib.h>
+#include <stddef.h>
 
 #include <stdint.h>
 
@@ -370,130 +371,218 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
      * ------------------------------------------------------------
      */
 
+    UINTN LoadSegmentCount = 0;
 
-	UINTN LoadSegmentCount = 0;
+    for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
 
-	for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
-	
-	    Elf64_Phdr *phdr =
-	        (Elf64_Phdr *)(
-	            (uint8_t *)KernelBuffer +
-	            ehdr->e_phoff +
-	            ((UINT64)i * ehdr->e_phentsize)
-	        );
-	
-	    if (phdr->p_type != PT_LOAD) {
-	        continue;
-	    }
-	
-	    Print(L"\r\n");
-	    Print(L"[M0.2] PT_LOAD #%u:\r\n", i);
-	
-	    Print(L"        Offset : 0x%lx\r\n", phdr->p_offset);
-	    Print(L"        VAddr  : 0x%lx\r\n", phdr->p_vaddr);
-	    Print(L"        PAddr  : 0x%lx\r\n", phdr->p_paddr);
-	    Print(L"        FileSz : 0x%lx\r\n", phdr->p_filesz);
-	    Print(L"        MemSz  : 0x%lx\r\n", phdr->p_memsz);
-	    Print(L"        Flags  : 0x%x\r\n", phdr->p_flags);
-	    Print(L"        Align  : 0x%lx\r\n", phdr->p_align);
-	
-	    /*
-	     * --------------------------------------------------------
-	     * Validate p_filesz <= p_memsz
-	     * --------------------------------------------------------
-	     */
-	
-	    if (phdr->p_filesz > phdr->p_memsz) {
-	        Print(L"[ERROR] PT_LOAD FileSz > MemSz.\r\n");
-	        halt();
-	    }
-	
-	
-	    /*
-	     * --------------------------------------------------------
-	     * Validate file range:
-	     *
-	     * p_offset + p_filesz <= KernelSize
-	     *
-	     * Avoid integer overflow.
-	     * --------------------------------------------------------
-	     */
-	
-	    if (phdr->p_offset > KernelSize) {
-	        Print(L"[ERROR] PT_LOAD offset outside ELF.\r\n");
-	        halt();
-	    }
-	
-	    if (phdr->p_filesz > KernelSize - phdr->p_offset) {
-	        Print(L"[ERROR] PT_LOAD file range outside ELF.\r\n");
-	        halt();
-	    }
-	
-	
-	    /*
-	     * --------------------------------------------------------
-	     * Validate memory range:
-	     *
-	     * p_vaddr + p_memsz must not overflow uint64_t.
-	     * --------------------------------------------------------
-	     */
-	
-	    if (phdr->p_vaddr > UINT64_MAX - phdr->p_memsz) {
-	        Print(L"[ERROR] PT_LOAD memory range overflow.\r\n");
-	        halt();
-	    }
-	
-	
-	    /*
-	     * --------------------------------------------------------
-	     * Basic alignment validation.
-	     * --------------------------------------------------------
-	     */
-	
-	    if (phdr->p_align != 0 &&
-	        (phdr->p_align & (phdr->p_align - 1)) != 0) {
-	
-	        Print(L"[ERROR] PT_LOAD alignment is not power-of-two.\r\n");
-	        halt();
-	    }
-	
-	
-	    LoadSegmentCount++;
-	}
-	
-	if (LoadSegmentCount == 0) {
-	    Print(L"[ERROR] No PT_LOAD segment found.\r\n");
-	    halt();
-	}
-	
-	Print(L"\r\n");
-	Print(L"[M0.2] PT_LOAD validation successful.\r\n");
-	Print(L"[M0.2] Loadable segments: %lu\r\n", LoadSegmentCount);
+        Elf64_Phdr *phdr =
+            (Elf64_Phdr *)(
+                (uint8_t *)KernelBuffer +
+                ehdr->e_phoff +
+                ((UINT64)i * ehdr->e_phentsize)
+            );
 
-    /*
-     * ------------------------------------------------------------
-     * M0.2 completed.
-     *
-     * IMPORTANT:
-     *
-     * We intentionally DO NOT:
-     *
-     *   - ExitBootServices()
-     *   - copy PT_LOAD segments to p_paddr
-     *   - zero .bss
-     *   - jump to e_entry
-     *
-     * Those belong to later stages.
-     * ------------------------------------------------------------
-     */
+        if (phdr->p_type != PT_LOAD) {
+            continue;
+        }
+
+        Print(L"\r\n");
+        Print(L"[M0.3.1] Loading PT_LOAD #%u\r\n", i);
+
+        Print(L"        Offset : 0x%lx\r\n", phdr->p_offset);
+        Print(L"        VAddr  : 0x%lx\r\n", phdr->p_vaddr);
+        Print(L"        PAddr  : 0x%lx\r\n", phdr->p_paddr);
+        Print(L"        FileSz : 0x%lx\r\n", phdr->p_filesz);
+        Print(L"        MemSz  : 0x%lx\r\n", phdr->p_memsz);
+        Print(L"        Flags  : 0x%x\r\n", phdr->p_flags);
+        Print(L"        Align  : 0x%lx\r\n", phdr->p_align);
+
+
+        /*
+        * --------------------------------------------------------
+        * Validation
+        * --------------------------------------------------------
+        */
+
+        if (phdr->p_filesz > phdr->p_memsz) {
+            Print(L"[ERROR] FileSz > MemSz.\r\n");
+            halt();
+        }
+
+        if (phdr->p_offset > KernelSize) {
+            Print(L"[ERROR] PT_LOAD offset outside ELF.\r\n");
+            halt();
+        }
+
+        if (phdr->p_filesz > KernelSize - phdr->p_offset) {
+            Print(L"[ERROR] PT_LOAD file range outside ELF.\r\n");
+            halt();
+        }
+
+        if (phdr->p_vaddr > UINT64_MAX - phdr->p_memsz) {
+            Print(L"[ERROR] PT_LOAD memory range overflow.\r\n");
+            halt();
+        }
+
+
+        /*
+        * --------------------------------------------------------
+        * Calculate page-aligned destination
+        * --------------------------------------------------------
+        */
+
+        UINT64 PageSize = 0x1000;
+
+        UINT64 SegmentStart = phdr->p_vaddr;
+        UINT64 SegmentEnd = phdr->p_vaddr + phdr->p_memsz;
+
+        UINT64 PageStart =
+            SegmentStart & ~(PageSize - 1);
+
+        UINT64 PageEnd =
+            (SegmentEnd + PageSize - 1) &
+            ~(PageSize - 1);
+
+        UINT64 PageCount =
+            (PageEnd - PageStart) / PageSize;
+
+
+        if (PageCount == 0) {
+            Print(L"[ERROR] PT_LOAD requires zero pages.\r\n");
+            halt();
+        }
+
+        Print(L"        PageStart: 0x%lx\r\n", PageStart);
+        Print(L"        PageEnd  : 0x%lx\r\n", PageEnd);
+        Print(L"        Pages    : %lu\r\n", PageCount);
+
+
+        /*
+        * --------------------------------------------------------
+        * Allocate physical pages.
+        *
+        * For M0.3.1 we deliberately request the exact address
+        * described by p_paddr.
+        * --------------------------------------------------------
+        */
+
+        EFI_PHYSICAL_ADDRESS LoadAddress =
+            (EFI_PHYSICAL_ADDRESS)PageStart;
+
+        status = uefi_call_wrapper(
+            BS->AllocatePages,
+            4,
+            AllocateAddress,
+            EfiLoaderData,
+            PageCount,
+            &LoadAddress
+        );
+
+        if (EFI_ERROR(status)) {
+            Print(L"[ERROR] AllocatePages() failed.\r\n");
+            Print(L"        EFI_STATUS = %r\r\n", status);
+            halt();
+        }
+
+        Print(L"        Allocated at: 0x%lx\r\n",
+            (UINT64)LoadAddress);
+
+
+        /*
+        * --------------------------------------------------------
+        * Zero the entire memory image first.
+        *
+        * This guarantees that the area corresponding to:
+        *
+        *     p_memsz - p_filesz
+        *
+        * is zero.
+        * --------------------------------------------------------
+        */
+
+        SetMem(
+            (void *)(UINTN)PageStart,
+            (UINTN)(PageEnd - PageStart),
+            0
+        );
+
+
+        /*
+        * --------------------------------------------------------
+        * Copy file-backed portion.
+        *
+        * Destination:
+        *
+        *     p_vaddr
+        *
+        * Source:
+        *
+        *     KernelBuffer + p_offset
+        * --------------------------------------------------------
+        */
+
+        if (phdr->p_filesz > 0) {
+
+            CopyMem(
+                (void *)(UINTN)phdr->p_vaddr,
+                (uint8_t *)KernelBuffer + phdr->p_offset,
+                (UINTN)phdr->p_filesz
+            );
+        }
+
+        Print(L"        Copied : %lu bytes\r\n",
+            phdr->p_filesz);
+
+        Print(L"        Zeroed  : %lu bytes\r\n",
+            phdr->p_memsz - phdr->p_filesz);
+
+
+        /*
+        * --------------------------------------------------------
+        * Verify the first bytes of the loaded segment.
+        *
+        * This is temporary diagnostic code.
+        * --------------------------------------------------------
+        */
+
+        if (phdr->p_filesz >= 4) {
+
+            uint8_t *Loaded =
+                (uint8_t *)(UINTN)phdr->p_vaddr;
+
+            Print(
+                L"        Memory  : %02x %02x %02x %02x\r\n",
+                Loaded[0],
+                Loaded[1],
+                Loaded[2],
+                Loaded[3]
+            );
+        }
+
+        Print(L"[M0.3.1] PT_LOAD loaded successfully.\r\n");
+
+        LoadSegmentCount++;
+    }
+
+
+    if (LoadSegmentCount == 0) {
+        Print(L"[ERROR] No PT_LOAD segment found.\r\n");
+        halt();
+    }
 
     Print(L"\r\n");
-    Print(L"================================\r\n");
-    Print(L"[M0.2] ELF parsing successful.\r\n");
-    Print(L"[M0.2] Kernel is NOT started yet.\r\n");
-    Print(L"================================\r\n");
+    Print(L"[M0.3.1] All PT_LOAD segments loaded.\r\n");
+    Print(L"[M0.3.1] Loadable segments: %lu\r\n",
+        LoadSegmentCount);
+
+    Print(L"[M0.3.1] Kernel entry remains: 0x%lx\r\n",
+        ehdr->e_entry);
+
+    Print(L"\r\n");
+    Print(L"[M0.3.1] Kernel is still NOT started.\r\n");
 
     halt();
 
     return EFI_SUCCESS;
 }
+
