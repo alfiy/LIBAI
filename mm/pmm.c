@@ -180,6 +180,53 @@ pmm_alloc_page(void)
     return 0;
 }
 
+uint64_t
+pmm_alloc_pages(uint64_t count)
+{
+    uint64_t page;
+    uint64_t run;
+    uint64_t i;
+
+    if (count == 0) {
+        return 0;
+    }
+
+    if (count == 1) {
+        return pmm_alloc_page();
+    }
+
+    if (count > pmm_free_count) {
+        return 0;
+    }
+
+    for (page = 1; page + count <= LIBAI_PMM_MAX_PAGES; page++) {
+        int ok = 1;
+
+        for (run = 0; run < count; run++) {
+            if (!pmm_page_is_free((page + run) * LIBAI_PAGE_SIZE)) {
+                page += run;
+                ok = 0;
+                break;
+            }
+        }
+
+        if (!ok) {
+            continue;
+        }
+
+        for (i = 0; i < count; i++) {
+            pmm_set_used(page + i, 1);
+            pmm_free_count--;
+            pmm_used_count++;
+        }
+
+        pmm_next_hint = page + count;
+        return page * LIBAI_PAGE_SIZE;
+    }
+
+    return 0;
+}
+
 void
 pmm_free_page(uint64_t phys)
 {
@@ -204,6 +251,16 @@ pmm_free_page(uint64_t phys)
 
     if (page < pmm_next_hint) {
         pmm_next_hint = page;
+    }
+}
+
+void
+pmm_free_pages(uint64_t phys, uint64_t count)
+{
+    uint64_t i;
+
+    for (i = 0; i < count; i++) {
+        pmm_free_page(phys + (i * LIBAI_PAGE_SIZE));
     }
 }
 

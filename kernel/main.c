@@ -5,10 +5,10 @@
 #include "pmm.h"
 
 /*
- * M0.6 kernel
+ * M0.7 kernel
  *
- * After walking the UEFI map, initialize a bitmap PMM and
- * prove alloc_page() / free_page() with a short serial test.
+ * After the PMM test, allocate a contiguous kernel stack and
+ * switch RSP off the leftover UEFI stack.
  */
 
 volatile uint8_t libai_bss_buffer[4096];
@@ -323,6 +323,113 @@ test_pmm(const LibaiBootInfo *info)
     serial_puts("[M0.6] Physical page allocator test successful.\n");
 }
 
+#define KERNEL_STACK_PAGES 4
+
+static uint64_t kernel_stack_base;
+static uint64_t kernel_stack_top;
+static uint64_t old_stack_page;
+
+static void
+kernel_on_new_stack(void)
+{
+    uint64_t rsp;
+    volatile uint8_t probe[128];
+    uint64_t i;
+
+    __asm__ volatile ("mov %%rsp, %0" : "=r"(rsp));
+
+    for (i = 0; i < 128; i++) {
+        probe[i] = (uint8_t)i;
+    }
+
+    serial_puts("[M0.7] now running on kernel stack\n");
+    serial_puts("[M0.7] new RSP = ");
+    serial_print_hex(rsp);
+    serial_puts("\n");
+
+    if (rsp < kernel_stack_base || rsp > kernel_stack_top) {
+        serial_puts("[ERROR] RSP is outside the new kernel stack.\n");
+        halt();
+    }
+
+    if (probe[127] != 127) {
+        serial_puts("[ERROR] stack probe write failed.\n");
+        halt();
+    }
+
+    serial_puts("[M0.7] stack probe write OK\n");
+
+    pmm_free_page(old_stack_page);
+    serial_puts("[M0.7] released old UEFI stack page ");
+    serial_print_hex(old_stack_page);
+    serial_puts("\n");
+    print_pmm_stats("[M0.7] after switch ");
+
+    serial_puts("[M0.7] Kernel stack switch successful.\n");
+    halt();
+}
+
+static void
+switch_to_kernel_stack(void)
+{
+    uint64_t old_rsp;
+    uint64_t base;
+    uint64_t top;
+
+    __asm__ volatile ("mov %%rsp, %0" : "=r"(old_rsp));
+
+    old_stack_page = old_rsp & ~(LIBAI_PAGE_SIZE - 1);
+
+    serial_puts("\n");
+    serial_puts("[M0.7] Switching off the UEFI stack...\n");
+    serial_puts("[M0.7] old RSP  = ");
+    serial_print_hex(old_rsp);
+    serial_puts("\n");
+    serial_puts("[M0.7] old page = ");
+    serial_print_hex(old_stack_page);
+    serial_puts("\n");
+
+    base = pmm_alloc_pages(KERNEL_STACK_PAGES);
+    if (base == 0) {
+        serial_puts("[ERROR] cannot allocate kernel stack.\n");
+        halt();
+    }
+
+    top = base + (KERNEL_STACK_PAGES * LIBAI_PAGE_SIZE);
+    top &= ~0xFull;
+
+    kernel_stack_base = base;
+    kernel_stack_top = top;
+
+    serial_puts("[M0.7] stack base = ");
+    serial_print_hex(base);
+    serial_puts("\n");
+    serial_puts("[M0.7] stack top  = ");
+    serial_print_hex(top);
+    serial_puts("\n");
+    serial_puts("[M0.7] stack size = ");
+    serial_print_u64(KERNEL_STACK_PAGES * LIBAI_PAGE_SIZE);
+    serial_puts(" bytes\n");
+    print_pmm_stats("[M0.7] after alloc  ");
+
+    /*
+     * Drop the UEFI stack and jump to C on the new stack.
+     * Do not return here: locals of this function live on the old stack.
+     */
+    __asm__ volatile (
+        "mov %[top], %%rsp\n\t"
+        "xor %%rbp, %%rbp\n\t"
+        "call *%[fn]\n\t"
+        "1:\n\t"
+        "hlt\n\t"
+        "jmp 1b\n\t"
+        :
+        : [top] "r"(top),
+          [fn] "r"(kernel_on_new_stack)
+        : "memory"
+    );
+}
+
 void
 libai_kernel_entry(LibaiBootInfo *info)
 {
@@ -392,6 +499,7 @@ libai_kernel_entry(LibaiBootInfo *info)
 
     dump_memory_map(info);
     test_pmm(info);
+    switch_to_kernel_stack();
 
     halt();
 }

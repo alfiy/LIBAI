@@ -21,7 +21,9 @@ typedef struct {
 
 void pmm_init(const LibaiBootInfo *info, uint64_t stack_pointer);
 uint64_t pmm_alloc_page(void);
+uint64_t pmm_alloc_pages(uint64_t count);
 void pmm_free_page(uint64_t phys);
+void pmm_free_pages(uint64_t phys, uint64_t count);
 int pmm_page_is_free(uint64_t phys);
 LibaiPmmStats pmm_stats(void);
 
