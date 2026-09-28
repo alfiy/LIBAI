@@ -1,11 +1,12 @@
 #include <stdint.h>
 
 #include "idt.h"
+#include "irq.h"
 #include "serial.h"
 
 /*
- * M0.9: 256-entry IDT, 64-bit interrupt gates, no PIC / no STI.
- * CPU exceptions 0..31 are wired. #PF prints CR2 / RIP / error.
+ * M0.10: exceptions 0..31 still halt after a dump.
+ * IRQ stubs 32..47 return through iretq after irq_handle().
  */
 
 struct IdtEntry {
@@ -97,6 +98,11 @@ idt_set_gate(uint8_t vector, uint64_t handler, uint16_t cs)
 void
 isr_dispatch(struct IsrFrame *frame)
 {
+    if (frame->vector >= 32 && frame->vector < 48) {
+        irq_handle(frame->vector);
+        return;
+    }
+
     serial_puts("\n");
     serial_puts("[M0.9] CPU exception #");
     serial_print_u64(frame->vector);
@@ -166,9 +172,23 @@ asm (
     "    push %r15\n"
     "    mov %rsp, %rdi\n"
     "    call isr_dispatch\n"
-    "1:\n"
-    "    hlt\n"
-    "    jmp 1b\n"
+    "    pop %r15\n"
+    "    pop %r14\n"
+    "    pop %r13\n"
+    "    pop %r12\n"
+    "    pop %r11\n"
+    "    pop %r10\n"
+    "    pop %r9\n"
+    "    pop %r8\n"
+    "    pop %rbp\n"
+    "    pop %rdi\n"
+    "    pop %rsi\n"
+    "    pop %rdx\n"
+    "    pop %rcx\n"
+    "    pop %rbx\n"
+    "    pop %rax\n"
+    "    add $16, %rsp\n"
+    "    iretq\n"
 );
 
 #define ISR_NOERR(n) \
@@ -200,6 +220,10 @@ ISR_NOERR(16) ISR_ERR(17)   ISR_NOERR(18) ISR_NOERR(19)
 ISR_NOERR(20) ISR_ERR(21)   ISR_NOERR(22) ISR_NOERR(23)
 ISR_NOERR(24) ISR_NOERR(25) ISR_NOERR(26) ISR_NOERR(27)
 ISR_NOERR(28) ISR_NOERR(29) ISR_NOERR(30) ISR_NOERR(31)
+ISR_NOERR(32) ISR_NOERR(33) ISR_NOERR(34) ISR_NOERR(35)
+ISR_NOERR(36) ISR_NOERR(37) ISR_NOERR(38) ISR_NOERR(39)
+ISR_NOERR(40) ISR_NOERR(41) ISR_NOERR(42) ISR_NOERR(43)
+ISR_NOERR(44) ISR_NOERR(45) ISR_NOERR(46) ISR_NOERR(47)
 
 void
 idt_init(void)
@@ -209,7 +233,7 @@ idt_init(void)
     uint64_t i;
 
     typedef void (*stub_fn)(void);
-    stub_fn stubs[32] = {
+    stub_fn stubs[48] = {
         isr_stub_0,  isr_stub_1,  isr_stub_2,  isr_stub_3,
         isr_stub_4,  isr_stub_5,  isr_stub_6,  isr_stub_7,
         isr_stub_8,  isr_stub_9,  isr_stub_10, isr_stub_11,
@@ -217,7 +241,11 @@ idt_init(void)
         isr_stub_16, isr_stub_17, isr_stub_18, isr_stub_19,
         isr_stub_20, isr_stub_21, isr_stub_22, isr_stub_23,
         isr_stub_24, isr_stub_25, isr_stub_26, isr_stub_27,
-        isr_stub_28, isr_stub_29, isr_stub_30, isr_stub_31
+        isr_stub_28, isr_stub_29, isr_stub_30, isr_stub_31,
+        isr_stub_32, isr_stub_33, isr_stub_34, isr_stub_35,
+        isr_stub_36, isr_stub_37, isr_stub_38, isr_stub_39,
+        isr_stub_40, isr_stub_41, isr_stub_42, isr_stub_43,
+        isr_stub_44, isr_stub_45, isr_stub_46, isr_stub_47
     };
 
     for (i = 0; i < 256; i++) {
@@ -230,7 +258,7 @@ idt_init(void)
         idt[i].reserved = 0;
     }
 
-    for (i = 0; i < 32; i++) {
+    for (i = 0; i < 48; i++) {
         idt_set_gate((uint8_t)i, (uint64_t)(uintptr_t)stubs[i], cs);
     }
 

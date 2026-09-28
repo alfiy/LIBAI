@@ -6,6 +6,7 @@
 #include "vmm.h"
 #include "serial.h"
 #include "idt.h"
+#include "irq.h"
 
 /*
  * M0.9 kernel
@@ -436,6 +437,23 @@ test_vmm(void)
 
     serial_puts("\n");
     idt_init();
+    irq_init();
+
+    serial_puts("[M0.10] Enabling interrupts, waiting for ");
+    serial_print_u64(LIBAI_IRQ_TEST_TICKS);
+    serial_puts(" timer ticks...\n");
+
+    irq_enable();
+    while (irq_ticks() < LIBAI_IRQ_TEST_TICKS) {
+        __asm__ volatile ("hlt");
+    }
+    irq_disable();
+
+    serial_puts("[M0.10] timer ticks = ");
+    serial_print_u64(irq_ticks());
+    serial_puts("\n");
+    serial_puts("[M0.10] PIT IRQ0 successful.\n");
+
     idt_test_page_fault();
 }
 
