@@ -4,12 +4,14 @@
 #include "uefi_mmap.h"
 #include "pmm.h"
 #include "vmm.h"
+#include "serial.h"
+#include "idt.h"
 
 /*
- * M0.8 kernel
+ * M0.9 kernel
  *
- * After switching to a kernel stack, replace UEFI page tables
- * with a 1 GiB identity map and reload CR3.
+ * After the identity map, load a minimal IDT and prove that a
+ * page fault prints CR2/RIP instead of resetting QEMU.
  */
 
 volatile uint8_t libai_bss_buffer[4096];
@@ -36,7 +38,7 @@ inb(uint16_t port)
     return value;
 }
 
-static void
+void
 serial_init(void)
 {
     outb(COM1 + 1, 0x00);
@@ -48,7 +50,7 @@ serial_init(void)
     outb(COM1 + 4, 0x0B);
 }
 
-static void
+void
 serial_putchar(char c)
 {
     if (c == '\n') {
@@ -61,7 +63,7 @@ serial_putchar(char c)
     outb(COM1 + 0, (uint8_t)c);
 }
 
-static void
+void
 serial_puts(const char *s)
 {
     while (*s) {
@@ -69,7 +71,7 @@ serial_puts(const char *s)
     }
 }
 
-static void
+void
 serial_print_hex(uint64_t value)
 {
     static const char hex[] = "0123456789ABCDEF";
@@ -88,7 +90,7 @@ serial_print_hex(uint64_t value)
     }
 }
 
-static void
+void
 serial_print_u64(uint64_t value)
 {
     char buf[20];
@@ -109,8 +111,8 @@ serial_print_u64(uint64_t value)
     }
 }
 
-static void
-halt(void)
+void
+libai_halt(void)
 {
     for (;;) {
         __asm__ volatile ("hlt");
@@ -137,12 +139,12 @@ dump_memory_map(const LibaiBootInfo *info)
 
     if (desc_size < sizeof(LibaiEfiMemoryDescriptor)) {
         serial_puts("[ERROR] Descriptor smaller than known layout.\n");
-        halt();
+        libai_halt();
     }
 
     if ((map_size % desc_size) != 0) {
         serial_puts("[ERROR] Memory map size is not a multiple of descriptor size.\n");
-        halt();
+        libai_halt();
     }
 
     for (t = 0; t < LIBAI_EFI_TYPE_COUNT; t++) {
@@ -287,7 +289,7 @@ test_pmm(const LibaiBootInfo *info)
 
     if (a == 0 || b == 0 || a == b) {
         serial_puts("[ERROR] pmm_alloc_page() failed.\n");
-        halt();
+        libai_halt();
     }
 
     page = (volatile uint32_t *)(uintptr_t)a;
@@ -296,7 +298,7 @@ test_pmm(const LibaiBootInfo *info)
 
     if (page[0] != 0x4C494241) {
         serial_puts("[ERROR] allocated page is not writable.\n");
-        halt();
+        libai_halt();
     }
 
     serial_puts("[M0.6] wrote marker into page A\n");
@@ -352,12 +354,12 @@ kernel_on_new_stack(void)
 
     if (rsp < kernel_stack_base || rsp > kernel_stack_top) {
         serial_puts("[ERROR] RSP is outside the new kernel stack.\n");
-        halt();
+        libai_halt();
     }
 
     if (probe[127] != 127) {
         serial_puts("[ERROR] stack probe write failed.\n");
-        halt();
+        libai_halt();
     }
 
     serial_puts("[M0.7] stack probe write OK\n");
@@ -370,7 +372,7 @@ kernel_on_new_stack(void)
 
     serial_puts("[M0.7] Kernel stack switch successful.\n");
     test_vmm();
-    halt();
+    libai_halt();
 }
 
 static void
@@ -390,7 +392,7 @@ test_vmm(void)
     v = vmm_init_identity();
     if (v.cr3 == 0) {
         serial_puts("[ERROR] vmm_init_identity() failed.\n");
-        halt();
+        libai_halt();
     }
 
     cr3_after = vmm_read_cr3();
@@ -413,7 +415,7 @@ test_vmm(void)
 
     if ((cr3_after & ~0xfffull) != (v.cr3 & ~0xfffull)) {
         serial_puts("[ERROR] CR3 does not match new PML4.\n");
-        halt();
+        libai_halt();
     }
 
     kernel_probe = (volatile uint32_t *)(uintptr_t)0x100000;
@@ -425,12 +427,16 @@ test_vmm(void)
     stack_probe[0] = 0xA5;
     if (stack_probe[0] != 0xA5) {
         serial_puts("[ERROR] stack page not writable after paging.\n");
-        halt();
+        libai_halt();
     }
 
     serial_puts("[M0.8] stack page still writable\n");
     print_pmm_stats("[M0.8] after paging ");
     serial_puts("[M0.8] Identity map installed.\n");
+
+    serial_puts("\n");
+    idt_init();
+    idt_test_page_fault();
 }
 
 static void
@@ -456,7 +462,7 @@ switch_to_kernel_stack(void)
     base = pmm_alloc_pages(KERNEL_STACK_PAGES);
     if (base == 0) {
         serial_puts("[ERROR] cannot allocate kernel stack.\n");
-        halt();
+        libai_halt();
     }
 
     top = base + (KERNEL_STACK_PAGES * LIBAI_PAGE_SIZE);
@@ -476,10 +482,6 @@ switch_to_kernel_stack(void)
     serial_puts(" bytes\n");
     print_pmm_stats("[M0.7] after alloc  ");
 
-    /*
-     * Drop the UEFI stack and jump to C on the new stack.
-     * Do not return here: locals of this function live on the old stack.
-     */
     __asm__ volatile (
         "mov %[top], %%rsp\n\t"
         "xor %%rbp, %%rbp\n\t"
@@ -508,7 +510,7 @@ libai_kernel_entry(LibaiBootInfo *info)
 
     if (info == 0) {
         serial_puts("[ERROR] BootInfo pointer is NULL.\n");
-        halt();
+        libai_halt();
     }
 
     serial_puts("[M0.4] BootInfo at ");
@@ -521,7 +523,7 @@ libai_kernel_entry(LibaiBootInfo *info)
 
     if (info->magic != LIBAI_BOOTINFO_MAGIC) {
         serial_puts("[ERROR] Invalid BootInfo magic.\n");
-        halt();
+        libai_halt();
     }
 
     serial_puts("[M0.4] magic OK   = LIBAI\n");
@@ -549,7 +551,7 @@ libai_kernel_entry(LibaiBootInfo *info)
     if (info->memory_map == 0 ||
         info->memory_map_descriptor_size == 0) {
         serial_puts("[ERROR] Memory map is missing.\n");
-        halt();
+        libai_halt();
     }
 
     desc_count =
@@ -565,5 +567,5 @@ libai_kernel_entry(LibaiBootInfo *info)
     test_pmm(info);
     switch_to_kernel_stack();
 
-    halt();
+    libai_halt();
 }
