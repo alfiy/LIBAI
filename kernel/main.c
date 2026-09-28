@@ -2,18 +2,18 @@
 
 #include "bootinfo.h"
 #include "uefi_mmap.h"
+#include "pmm.h"
 
 /*
- * M0.5 kernel
+ * M0.6 kernel
  *
- * After the M0.4 BootInfo handshake, walk the UEFI memory map
- * and print a usable-memory summary. No page allocator yet.
+ * After walking the UEFI map, initialize a bitmap PMM and
+ * prove alloc_page() / free_page() with a short serial test.
  */
 
 volatile uint8_t libai_bss_buffer[4096];
 
 #define COM1 0x3F8
-#define LIBAI_PAGE_SIZE 4096ull
 
 static inline void
 outb(uint16_t port, uint8_t value)
@@ -237,6 +237,92 @@ dump_memory_map(const LibaiBootInfo *info)
     serial_puts("[M0.5] Memory map walk successful.\n");
 }
 
+static void
+print_pmm_stats(const char *tag)
+{
+    LibaiPmmStats s = pmm_stats();
+
+    serial_puts(tag);
+    serial_puts(" free=");
+    serial_print_u64(s.free_pages);
+    serial_puts(" used=");
+    serial_print_u64(s.used_pages);
+    serial_puts(" managed=");
+    serial_print_u64(s.managed_pages);
+    serial_puts("\n");
+}
+
+static void
+test_pmm(const LibaiBootInfo *info)
+{
+    uint64_t rsp;
+    uint64_t a;
+    uint64_t b;
+    uint64_t c;
+    volatile uint32_t *page;
+
+    __asm__ volatile ("mov %%rsp, %0" : "=r"(rsp));
+
+    serial_puts("\n");
+    serial_puts("[M0.6] Initializing physical page allocator...\n");
+    serial_puts("[M0.6] Kernel image ");
+    serial_puts("reserved via __kernel_start/__kernel_end\n");
+    serial_puts("[M0.6] Current stack RSP=");
+    serial_print_hex(rsp);
+    serial_puts("\n");
+
+    pmm_init(info, rsp);
+    print_pmm_stats("[M0.6] after init   ");
+
+    a = pmm_alloc_page();
+    b = pmm_alloc_page();
+
+    serial_puts("[M0.6] alloc A = ");
+    serial_print_hex(a);
+    serial_puts("\n");
+    serial_puts("[M0.6] alloc B = ");
+    serial_print_hex(b);
+    serial_puts("\n");
+
+    if (a == 0 || b == 0 || a == b) {
+        serial_puts("[ERROR] pmm_alloc_page() failed.\n");
+        halt();
+    }
+
+    page = (volatile uint32_t *)(uintptr_t)a;
+    page[0] = 0x4C494241;
+    page[1] = 0x00000049;
+
+    if (page[0] != 0x4C494241) {
+        serial_puts("[ERROR] allocated page is not writable.\n");
+        halt();
+    }
+
+    serial_puts("[M0.6] wrote marker into page A\n");
+    print_pmm_stats("[M0.6] after alloc  ");
+
+    pmm_free_page(a);
+    serial_puts("[M0.6] freed A\n");
+    print_pmm_stats("[M0.6] after free A ");
+
+    c = pmm_alloc_page();
+    serial_puts("[M0.6] alloc C = ");
+    serial_print_hex(c);
+    serial_puts("\n");
+
+    if (c != a) {
+        serial_puts("[M0.6] note: C != A (acceptable, depends on search hint)\n");
+    } else {
+        serial_puts("[M0.6] C reused A, free list works.\n");
+    }
+
+    pmm_free_page(b);
+    pmm_free_page(c);
+    print_pmm_stats("[M0.6] after free all");
+
+    serial_puts("[M0.6] Physical page allocator test successful.\n");
+}
+
 void
 libai_kernel_entry(LibaiBootInfo *info)
 {
@@ -305,6 +391,7 @@ libai_kernel_entry(LibaiBootInfo *info)
     serial_puts("[M0.4] BootInfo handshake successful.\n");
 
     dump_memory_map(info);
+    test_pmm(info);
 
     halt();
 }
