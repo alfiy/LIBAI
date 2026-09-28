@@ -3,12 +3,13 @@
 #include "bootinfo.h"
 #include "uefi_mmap.h"
 #include "pmm.h"
+#include "vmm.h"
 
 /*
- * M0.7 kernel
+ * M0.8 kernel
  *
- * After the PMM test, allocate a contiguous kernel stack and
- * switch RSP off the leftover UEFI stack.
+ * After switching to a kernel stack, replace UEFI page tables
+ * with a 1 GiB identity map and reload CR3.
  */
 
 volatile uint8_t libai_bss_buffer[4096];
@@ -323,6 +324,8 @@ test_pmm(const LibaiBootInfo *info)
     serial_puts("[M0.6] Physical page allocator test successful.\n");
 }
 
+static void test_vmm(void);
+
 #define KERNEL_STACK_PAGES 4
 
 static uint64_t kernel_stack_base;
@@ -366,7 +369,68 @@ kernel_on_new_stack(void)
     print_pmm_stats("[M0.7] after switch ");
 
     serial_puts("[M0.7] Kernel stack switch successful.\n");
+    test_vmm();
     halt();
+}
+
+static void
+test_vmm(void)
+{
+    LibaiVmmInfo v;
+    uint64_t cr3_after;
+    volatile uint32_t *kernel_probe;
+    volatile uint8_t *stack_probe;
+
+    serial_puts("\n");
+    serial_puts("[M0.8] Installing identity page tables...\n");
+    serial_puts("[M0.8] old CR3 = ");
+    serial_print_hex(vmm_read_cr3());
+    serial_puts("\n");
+
+    v = vmm_init_identity();
+    if (v.cr3 == 0) {
+        serial_puts("[ERROR] vmm_init_identity() failed.\n");
+        halt();
+    }
+
+    cr3_after = vmm_read_cr3();
+
+    serial_puts("[M0.8] PML4     = ");
+    serial_print_hex(v.pml4);
+    serial_puts("\n");
+    serial_puts("[M0.8] PDPT     = ");
+    serial_print_hex(v.pdpt);
+    serial_puts("\n");
+    serial_puts("[M0.8] PD       = ");
+    serial_print_hex(v.pd);
+    serial_puts("\n");
+    serial_puts("[M0.8] new CR3  = ");
+    serial_print_hex(cr3_after);
+    serial_puts("\n");
+    serial_puts("[M0.8] mapped   = ");
+    serial_print_u64(v.mapped_bytes);
+    serial_puts(" bytes\n");
+
+    if ((cr3_after & ~0xfffull) != (v.cr3 & ~0xfffull)) {
+        serial_puts("[ERROR] CR3 does not match new PML4.\n");
+        halt();
+    }
+
+    kernel_probe = (volatile uint32_t *)(uintptr_t)0x100000;
+    serial_puts("[M0.8] kernel[0x100000] = ");
+    serial_print_hex(kernel_probe[0]);
+    serial_puts("\n");
+
+    stack_probe = (volatile uint8_t *)(uintptr_t)kernel_stack_base;
+    stack_probe[0] = 0xA5;
+    if (stack_probe[0] != 0xA5) {
+        serial_puts("[ERROR] stack page not writable after paging.\n");
+        halt();
+    }
+
+    serial_puts("[M0.8] stack page still writable\n");
+    print_pmm_stats("[M0.8] after paging ");
+    serial_puts("[M0.8] Identity map installed.\n");
 }
 
 static void
