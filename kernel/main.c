@@ -10,10 +10,10 @@
 #include "kbd.h"
 
 /*
- * M0.9 kernel
+ * M0.12 kernel
  *
- * After the identity map, load a minimal IDT and prove that a
- * page fault prints CR2/RIP instead of resetting QEMU.
+ * After IRQ0/IRQ1 come up, drop into a serial+keyboard shell.
+ * The old automatic #PF test is now the "pf" command.
  */
 
 volatile uint8_t libai_bss_buffer[4096];
@@ -329,6 +329,7 @@ test_pmm(const LibaiBootInfo *info)
 }
 
 static void test_vmm(void);
+static void kbd_shell(void);
 
 #define KERNEL_STACK_PAGES 4
 
@@ -454,56 +455,90 @@ test_vmm(void)
     serial_print_u64(irq_ticks());
     serial_puts("\n");
     serial_puts("[M0.10] PIT IRQ0 successful.\n");
+    kbd_shell();
+}
+
+static int
+streq(const char *a, const char *b)
+{
+    while (*a && *a == *b) {
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+static void
+kbd_shell(void)
+{
+    char line[64];
+    uint64_t n = 0;
+    uint8_t sc;
+    char ch;
 
     serial_puts("\n");
-    serial_puts("[M0.11] Waiting for keyboard IRQ1...\n");
-    serial_puts("[M0.11] From another terminal: telnet 127.0.0.1 45454\n");
-    serial_puts("[M0.11] Then at (qemu) prompt: sendkey a\n");
+    serial_puts("[M0.12] Libai shell. Type help + Enter.\n");
+    serial_puts("[M0.12] Keys: telnet 127.0.0.1 45454 then sendkey <key>\n");
+    serial_puts("[M0.12] Enter is: sendkey ret\n");
+    serial_puts("libai> ");
 
     irq_enable();
-    {
-        uint64_t last_note = irq_ticks();
-        uint64_t got = 0;
-        uint8_t sc;
 
-        while (got < LIBAI_KBD_TEST_KEYS) {
-            if (!kbd_pop(&sc)) {
-                if ((irq_ticks() - last_note) >= 100) {
-                    last_note = irq_ticks();
-                    serial_puts("[M0.11] still waiting, ticks=");
-                    serial_print_u64(irq_ticks());
-                    serial_puts("  (telnet 127.0.0.1 45454, sendkey a)\n");
-                }
-                __asm__ volatile ("hlt");
-                continue;
-            }
-
-            got++;
-            serial_puts("[M0.11] scancode ");
-            serial_print_hex(sc);
-            if (sc & 0x80) {
-                serial_puts(" break");
-            } else {
-                char ch = kbd_scancode_to_ascii(sc);
-                serial_puts(" make");
-                if (ch >= 32 && ch < 127) {
-                    serial_puts(" '");
-                    serial_putchar(ch);
-                    serial_puts("'");
-                }
-            }
-            serial_puts("\n");
+    for (;;) {
+        if (!kbd_pop(&sc)) {
+            __asm__ volatile ("hlt");
+            continue;
         }
 
-        irq_disable();
+        ch = kbd_scancode_to_ascii(sc);
+        if (ch == 0) {
+            continue;
+        }
 
-        serial_puts("[M0.11] captured ");
-        serial_print_u64(got);
-        serial_puts(" scancodes\n");
-        serial_puts("[M0.11] Keyboard IRQ1 successful.\n");
+        if (ch == '\b') {
+            if (n > 0) {
+                n--;
+                serial_puts("\b \b");
+            }
+            continue;
+        }
+
+        if (ch == '\n') {
+            line[n] = 0;
+            serial_puts("\n");
+
+            if (n == 0) {
+                /* empty line */
+            } else if (streq(line, "help")) {
+                serial_puts("commands: help ticks mem pf halt\n");
+            } else if (streq(line, "ticks")) {
+                serial_puts("ticks = ");
+                serial_print_u64(irq_ticks());
+                serial_puts("\n");
+            } else if (streq(line, "mem")) {
+                print_pmm_stats("pmm ");
+            } else if (streq(line, "pf")) {
+                idt_test_page_fault();
+            } else if (streq(line, "halt")) {
+                serial_puts("halting.\n");
+                irq_disable();
+                libai_halt();
+            } else {
+                serial_puts("unknown command: ");
+                serial_puts(line);
+                serial_puts("\n");
+            }
+
+            n = 0;
+            serial_puts("libai> ");
+            continue;
+        }
+
+        if (n + 1 < sizeof(line) && ch >= 32 && ch < 127) {
+            line[n++] = ch;
+            serial_putchar(ch);
+        }
     }
-
-    idt_test_page_fault();
 }
 
 static void

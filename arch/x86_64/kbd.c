@@ -59,8 +59,9 @@ kbd_scancode_to_ascii(uint8_t scancode)
         [0x26] = 'l',
         [0x2C] = 'z', [0x2D] = 'x', [0x2E] = 'c', [0x2F] = 'v',
         [0x30] = 'b', [0x31] = 'n', [0x32] = 'm',
-        [0x39] = ' ',
+        [0x0E] = '\b',
         [0x1C] = '\n',
+        [0x39] = ' ',
     };
 
     if (scancode & 0x80) {
