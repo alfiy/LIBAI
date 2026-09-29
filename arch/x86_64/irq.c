@@ -1,5 +1,6 @@
 #include "irq.h"
 #include "io.h"
+#include "kbd.h"
 #include "serial.h"
 
 #define PIC1_CMD  0x20
@@ -26,8 +27,8 @@ pic_remap(void)
     outb(PIC1_DATA, 0x01);
     outb(PIC2_DATA, 0x01);
 
-    /* Unmask only IRQ0 (PIT). */
-    outb(PIC1_DATA, 0xFE);
+    /* Unmask IRQ0 (PIT) and IRQ1 (keyboard). */
+    outb(PIC1_DATA, 0xFC);
     outb(PIC2_DATA, 0xFF);
 }
 
@@ -66,10 +67,11 @@ irq_init(void)
     timer_ticks = 0;
     pic_remap();
     pit_init(LIBAI_IRQ_TIMER_HZ);
+    kbd_init();
 
     serial_puts("[M0.10] PIC remapped, PIT at ");
     serial_print_u64(LIBAI_IRQ_TIMER_HZ);
-    serial_puts(" Hz\n");
+    serial_puts(" Hz, IRQ1 keyboard unmasked\n");
 }
 
 void
@@ -77,6 +79,8 @@ irq_handle(uint64_t vector)
 {
     if (vector == LIBAI_IRQ_TIMER_VECTOR) {
         timer_ticks++;
+    } else if (vector == LIBAI_IRQ_KBD_VECTOR) {
+        kbd_interrupt();
     }
 
     pic_eoi(vector);

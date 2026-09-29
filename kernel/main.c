@@ -7,6 +7,7 @@
 #include "serial.h"
 #include "idt.h"
 #include "irq.h"
+#include "kbd.h"
 
 /*
  * M0.9 kernel
@@ -453,6 +454,54 @@ test_vmm(void)
     serial_print_u64(irq_ticks());
     serial_puts("\n");
     serial_puts("[M0.10] PIT IRQ0 successful.\n");
+
+    serial_puts("\n");
+    serial_puts("[M0.11] Waiting for keyboard IRQ1...\n");
+    serial_puts("[M0.11] From another terminal: telnet 127.0.0.1 45454\n");
+    serial_puts("[M0.11] Then at (qemu) prompt: sendkey a\n");
+
+    irq_enable();
+    {
+        uint64_t last_note = irq_ticks();
+        uint64_t got = 0;
+        uint8_t sc;
+
+        while (got < LIBAI_KBD_TEST_KEYS) {
+            if (!kbd_pop(&sc)) {
+                if ((irq_ticks() - last_note) >= 100) {
+                    last_note = irq_ticks();
+                    serial_puts("[M0.11] still waiting, ticks=");
+                    serial_print_u64(irq_ticks());
+                    serial_puts("  (telnet 127.0.0.1 45454, sendkey a)\n");
+                }
+                __asm__ volatile ("hlt");
+                continue;
+            }
+
+            got++;
+            serial_puts("[M0.11] scancode ");
+            serial_print_hex(sc);
+            if (sc & 0x80) {
+                serial_puts(" break");
+            } else {
+                char ch = kbd_scancode_to_ascii(sc);
+                serial_puts(" make");
+                if (ch >= 32 && ch < 127) {
+                    serial_puts(" '");
+                    serial_putchar(ch);
+                    serial_puts("'");
+                }
+            }
+            serial_puts("\n");
+        }
+
+        irq_disable();
+
+        serial_puts("[M0.11] captured ");
+        serial_print_u64(got);
+        serial_puts(" scancodes\n");
+        serial_puts("[M0.11] Keyboard IRQ1 successful.\n");
+    }
 
     idt_test_page_fault();
 }
