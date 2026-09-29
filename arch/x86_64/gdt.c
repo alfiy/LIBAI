@@ -5,9 +5,11 @@
  * M0.13: kernel-owned GDT + 64-bit TSS.
  *
  *   0x00  null
- *   0x08  kernel code  (L=1)
- *   0x10  kernel data
- *   0x18  TSS (16-byte long-mode descriptor)
+ *   0x08  kernel code  (L=1, DPL=0)
+ *   0x10  kernel data  (DPL=0)
+ *   0x18  TSS (16-byte, occupies 0x18 and 0x20)
+ *   0x28  user code    (L=1, DPL=3)
+ *   0x30  user data    (DPL=3)
  */
 
 struct GdtEntry {
@@ -58,29 +60,31 @@ struct GdtTable {
     struct GdtEntry kernel_code;
     struct GdtEntry kernel_data;
     struct TssDesc  tss;
+    struct GdtEntry user_code;
+    struct GdtEntry user_data;
 } __attribute__((packed));
 
 static struct GdtTable gdt;
 static struct Tss tss;
 
 static void
-gdt_set_code64(struct GdtEntry *e)
+gdt_set_code64(struct GdtEntry *e, uint8_t dpl)
 {
     e->limit_low = 0;
     e->base_low = 0;
     e->base_mid = 0;
-    e->access = 0x9A;
+    e->access = (uint8_t)(0x9A | (dpl << 5));
     e->gran = 0x20;
     e->base_high = 0;
 }
 
 static void
-gdt_set_data(struct GdtEntry *e)
+gdt_set_data(struct GdtEntry *e, uint8_t dpl)
 {
     e->limit_low = 0;
     e->base_low = 0;
     e->base_mid = 0;
-    e->access = 0x92;
+    e->access = (uint8_t)(0x92 | (dpl << 5));
     e->gran = 0x00;
     e->base_high = 0;
 }
@@ -166,9 +170,11 @@ gdt_init(uint64_t kernel_rsp0)
     gdt.null.gran = 0;
     gdt.null.base_high = 0;
 
-    gdt_set_code64(&gdt.kernel_code);
-    gdt_set_data(&gdt.kernel_data);
+    gdt_set_code64(&gdt.kernel_code, 0);
+    gdt_set_data(&gdt.kernel_data, 0);
     gdt_set_tss(&gdt.tss, (uint64_t)(uintptr_t)&tss, (uint32_t)(sizeof(tss) - 1));
+    gdt_set_code64(&gdt.user_code, 3);
+    gdt_set_data(&gdt.user_data, 3);
 
     serial_puts("[M0.13] Loading kernel GDT, old CS=");
     serial_print_hex(old_cs);

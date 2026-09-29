@@ -3,6 +3,8 @@
 #include "idt.h"
 #include "irq.h"
 #include "serial.h"
+#include "gdt.h"
+#include "user.h"
 
 /*
  * M0.10: exceptions 0..31 still halt after a dump.
@@ -84,12 +86,12 @@ read_cs(void)
 }
 
 static void
-idt_set_gate(uint8_t vector, uint64_t handler, uint16_t cs)
+idt_set_gate(uint8_t vector, uint64_t handler, uint16_t cs, uint8_t type)
 {
     idt[vector].offset_low = (uint16_t)(handler & 0xFFFF);
     idt[vector].selector = cs;
     idt[vector].ist = 0;
-    idt[vector].type_attr = IDT_GATE_INTERRUPT;
+    idt[vector].type_attr = type;
     idt[vector].offset_mid = (uint16_t)((handler >> 16) & 0xFFFF);
     idt[vector].offset_high = (uint32_t)(handler >> 32);
     idt[vector].reserved = 0;
@@ -100,6 +102,17 @@ isr_dispatch(struct IsrFrame *frame)
 {
     if (frame->vector >= 32 && frame->vector < 48) {
         irq_handle(frame->vector);
+        return;
+    }
+
+    if (frame->vector == LIBAI_INT_SYSCALL) {
+        if (user_on_syscall(frame->rax, frame->cs)) {
+            frame->rip = user_kernel_rip();
+            frame->cs = LIBAI_GDT_KERNEL_CS;
+            frame->ss = LIBAI_GDT_KERNEL_DS;
+            frame->rsp = user_kernel_rsp();
+            frame->rflags = 0x202;
+        }
         return;
     }
 
@@ -224,6 +237,7 @@ ISR_NOERR(32) ISR_NOERR(33) ISR_NOERR(34) ISR_NOERR(35)
 ISR_NOERR(36) ISR_NOERR(37) ISR_NOERR(38) ISR_NOERR(39)
 ISR_NOERR(40) ISR_NOERR(41) ISR_NOERR(42) ISR_NOERR(43)
 ISR_NOERR(44) ISR_NOERR(45) ISR_NOERR(46) ISR_NOERR(47)
+ISR_NOERR(128)
 
 void
 idt_init(void)
@@ -259,8 +273,15 @@ idt_init(void)
     }
 
     for (i = 0; i < 48; i++) {
-        idt_set_gate((uint8_t)i, (uint64_t)(uintptr_t)stubs[i], cs);
+        idt_set_gate((uint8_t)i, (uint64_t)(uintptr_t)stubs[i], cs, IDT_GATE_INTERRUPT);
     }
+
+    idt_set_gate(
+        LIBAI_INT_SYSCALL,
+        (uint64_t)(uintptr_t)isr_stub_128,
+        cs,
+        0xEE
+    );
 
     ptr.limit = (uint16_t)(sizeof(idt) - 1);
     ptr.base = (uint64_t)(uintptr_t)idt;
