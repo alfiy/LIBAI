@@ -8,6 +8,7 @@
 #include "idt.h"
 #include "irq.h"
 #include "kbd.h"
+#include "gdt.h"
 
 /*
  * M0.12 kernel
@@ -438,6 +439,12 @@ test_vmm(void)
     serial_puts("[M0.8] Identity map installed.\n");
 
     serial_puts("\n");
+    gdt_init(kernel_stack_top);
+    if (gdt_read_cs() != LIBAI_GDT_KERNEL_CS) {
+        serial_puts("[ERROR] CS is not kernel 0x08 after GDT reload.\n");
+        libai_halt();
+    }
+
     idt_init();
     irq_init();
 
@@ -510,13 +517,19 @@ kbd_shell(void)
             if (n == 0) {
                 /* empty line */
             } else if (streq(line, "help")) {
-                serial_puts("commands: help ticks mem pf halt\n");
+                serial_puts("commands: help ticks mem gdt pf halt\n");
             } else if (streq(line, "ticks")) {
                 serial_puts("ticks = ");
                 serial_print_u64(irq_ticks());
                 serial_puts("\n");
             } else if (streq(line, "mem")) {
                 print_pmm_stats("pmm ");
+            } else if (streq(line, "gdt")) {
+                serial_puts("CS=");
+                serial_print_hex(gdt_read_cs());
+                serial_puts(" TR=");
+                serial_print_hex(gdt_read_tr());
+                serial_puts("\n");
             } else if (streq(line, "pf")) {
                 idt_test_page_fault();
             } else if (streq(line, "halt")) {
