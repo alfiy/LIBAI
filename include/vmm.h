@@ -21,5 +21,6 @@ typedef struct {
 
 LibaiVmmInfo vmm_init_identity(void);
 uint64_t vmm_read_cr3(void);
+int vmm_allow_user(uint64_t virt);
 
 #endif

@@ -1,6 +1,7 @@
 #include "user.h"
 #include "gdt.h"
 #include "pmm.h"
+#include "vmm.h"
 #include "serial.h"
 
 /*
@@ -53,6 +54,18 @@ user_install_program(void)
     for (i = 0; i < sizeof(prog); i++) {
         dst[i] = prog[i];
     }
+
+    if (!vmm_allow_user(user_code_page) ||
+        !vmm_allow_user(user_stack_page)) {
+        serial_puts("[ERROR] cannot mark user pages.\n");
+        return 0;
+    }
+
+    serial_puts("[M0.14] user pages marked U: code=");
+    serial_print_hex(user_code_page);
+    serial_puts(" stack=");
+    serial_print_hex(user_stack_page);
+    serial_puts("\n");
 
     return 1;
 }
