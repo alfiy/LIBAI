@@ -331,6 +331,7 @@ test_pmm(const LibaiBootInfo *info)
 }
 
 static void test_vmm(void);
+static void after_higher_half(void);
 static void kbd_shell(void);
 
 void
@@ -450,6 +451,53 @@ test_vmm(void)
     serial_puts("[M0.8] Identity map installed.\n");
 
     serial_puts("\n");
+    serial_puts("[M0.16] Mapping higher-half alias 0xFFFFFFFF80000000...\n");
+    if (!vmm_map_higher_half()) {
+        serial_puts("[ERROR] higher-half map failed.\n");
+        libai_halt();
+    }
+
+    {
+        volatile uint32_t *low = (volatile uint32_t *)(uintptr_t)0x100000;
+        volatile uint32_t *high =
+            (volatile uint32_t *)(uintptr_t)vmm_to_higher(0x100000);
+
+        serial_puts("[M0.16] low [0x100000]  = ");
+        serial_print_hex(low[0]);
+        serial_puts("\n");
+        serial_puts("[M0.16] high[HH+1MB]    = ");
+        serial_print_hex(high[0]);
+        serial_puts("\n");
+
+        if (low[0] != high[0]) {
+            serial_puts("[ERROR] higher-half alias does not match.\n");
+            libai_halt();
+        }
+    }
+
+    serial_puts("[M0.16] low RIP = ");
+    serial_print_hex(vmm_read_rip());
+    serial_puts("\n");
+    serial_puts("[M0.16] Jumping to higher-half RIP...\n");
+    vmm_jump_higher(after_higher_half);
+}
+
+static void
+after_higher_half(void)
+{
+    uint64_t rip = vmm_read_rip();
+
+    serial_puts("[M0.16] high RIP = ");
+    serial_print_hex(rip);
+    serial_puts("\n");
+
+    if (rip < LIBAI_HH_BASE) {
+        serial_puts("[ERROR] still running in the low half.\n");
+        libai_halt();
+    }
+
+    serial_puts("[M0.16] Higher-half window active.\n");
+
     gdt_init(kernel_stack_top);
     user_init(kernel_stack_top);
     if (gdt_read_cs() != LIBAI_GDT_KERNEL_CS) {
@@ -529,7 +577,7 @@ kbd_shell(void)
             if (n == 0) {
                 /* empty line */
             } else if (streq(line, "help")) {
-                serial_puts("commands: help ticks mem gdt cr3 user pf halt\n");
+                serial_puts("commands: help ticks mem gdt cr3 rip user pf halt\n");
             } else if (streq(line, "ticks")) {
                 serial_puts("ticks = ");
                 serial_print_u64(irq_ticks());
@@ -541,6 +589,10 @@ kbd_shell(void)
                 serial_print_hex(gdt_read_cs());
                 serial_puts(" TR=");
                 serial_print_hex(gdt_read_tr());
+                serial_puts("\n");
+            } else if (streq(line, "rip")) {
+                serial_puts("RIP=");
+                serial_print_hex(vmm_read_rip());
                 serial_puts("\n");
             } else if (streq(line, "cr3")) {
                 serial_puts("CR3=");

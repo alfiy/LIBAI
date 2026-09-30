@@ -117,7 +117,7 @@ user_on_syscall(uint64_t rax, uint64_t cs)
 uint64_t
 user_kernel_rip(void)
 {
-    return (uint64_t)(uintptr_t)libai_after_user;
+    return vmm_to_higher((uint64_t)(uintptr_t)libai_after_user);
 }
 
 uint64_t

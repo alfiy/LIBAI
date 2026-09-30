@@ -162,6 +162,20 @@ vmm_space_allow_user(LibaiAddrSpace *space, uint64_t virt)
     return 1;
 }
 
+static void
+vmm_install_higher_half(uint64_t *pml4, uint64_t *pdpt, uint64_t *pd)
+{
+    pdpt[LIBAI_HH_PDPT_INDEX] =
+        (uint64_t)(uintptr_t)pd |
+        LIBAI_VMM_PAGE_PRESENT |
+        LIBAI_VMM_PAGE_WRITE;
+
+    pml4[LIBAI_HH_PML4_INDEX] =
+        (uint64_t)(uintptr_t)pdpt |
+        LIBAI_VMM_PAGE_PRESENT |
+        LIBAI_VMM_PAGE_WRITE;
+}
+
 int
 vmm_create_user_space(LibaiAddrSpace *space)
 {
@@ -173,8 +187,47 @@ vmm_create_user_space(LibaiAddrSpace *space)
         return 0;
     }
 
+    vmm_install_higher_half(space->pml4, space->pdpt, space->pd);
     space->cr3 = (uint64_t)(uintptr_t)space->pml4;
     return 1;
+}
+
+int
+vmm_map_higher_half(void)
+{
+    if (vmm_k_pml4 == 0) {
+        return 0;
+    }
+
+    vmm_install_higher_half(vmm_k_pml4, vmm_k_pdpt, vmm_k_pd);
+    vmm_switch(vmm_k_cr3);
+    return 1;
+}
+
+uint64_t
+vmm_read_rip(void)
+{
+    uint64_t rip;
+
+    __asm__ volatile ("leaq (%%rip), %0" : "=r"(rip));
+    return rip;
+}
+
+void
+vmm_jump_higher(void (*cont)(void))
+{
+    uint64_t dest = (uint64_t)(uintptr_t)cont;
+
+    if (dest < LIBAI_HH_BASE) {
+        dest += LIBAI_HH_BASE;
+    }
+
+    __asm__ volatile (
+        "jmp *%[dest]\n\t"
+        :
+        : [dest] "r"(dest)
+        : "memory"
+    );
 }
 
 int

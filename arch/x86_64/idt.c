@@ -5,6 +5,7 @@
 #include "serial.h"
 #include "gdt.h"
 #include "user.h"
+#include "vmm.h"
 
 /*
  * M0.10: exceptions 0..31 still halt after a dump.
@@ -273,12 +274,17 @@ idt_init(void)
     }
 
     for (i = 0; i < 48; i++) {
-        idt_set_gate((uint8_t)i, (uint64_t)(uintptr_t)stubs[i], cs, IDT_GATE_INTERRUPT);
+        idt_set_gate(
+            (uint8_t)i,
+            vmm_to_higher((uint64_t)(uintptr_t)stubs[i]),
+            cs,
+            IDT_GATE_INTERRUPT
+        );
     }
 
     idt_set_gate(
         LIBAI_INT_SYSCALL,
-        (uint64_t)(uintptr_t)isr_stub_128,
+        vmm_to_higher((uint64_t)(uintptr_t)isr_stub_128),
         cs,
         0xEE
     );
