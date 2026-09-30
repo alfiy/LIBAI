@@ -529,7 +529,7 @@ kbd_shell(void)
             if (n == 0) {
                 /* empty line */
             } else if (streq(line, "help")) {
-                serial_puts("commands: help ticks mem gdt user pf halt\n");
+                serial_puts("commands: help ticks mem gdt cr3 user pf halt\n");
             } else if (streq(line, "ticks")) {
                 serial_puts("ticks = ");
                 serial_print_u64(irq_ticks());
@@ -541,6 +541,12 @@ kbd_shell(void)
                 serial_print_hex(gdt_read_cs());
                 serial_puts(" TR=");
                 serial_print_hex(gdt_read_tr());
+                serial_puts("\n");
+            } else if (streq(line, "cr3")) {
+                serial_puts("CR3=");
+                serial_print_hex(vmm_read_cr3());
+                serial_puts(" kernel=");
+                serial_print_hex(vmm_kernel_cr3());
                 serial_puts("\n");
             } else if (streq(line, "user")) {
                 user_run();

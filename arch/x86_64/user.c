@@ -16,7 +16,8 @@
 static uint64_t user_code_page;
 static uint64_t user_stack_page;
 static uint64_t saved_kernel_rsp0;
-static volatile int user_finished;
+static LibaiAddrSpace user_space;
+static int user_space_ready;
 extern void libai_after_user(void);
 
 void
@@ -25,7 +26,7 @@ user_init(uint64_t kernel_rsp0)
     saved_kernel_rsp0 = kernel_rsp0;
     user_code_page = 0;
     user_stack_page = 0;
-    user_finished = 0;
+    user_space_ready = 0;
 }
 
 static int
@@ -55,13 +56,27 @@ user_install_program(void)
         dst[i] = prog[i];
     }
 
-    if (!vmm_allow_user(user_code_page) ||
-        !vmm_allow_user(user_stack_page)) {
-        serial_puts("[ERROR] cannot mark user pages.\n");
+    if (!user_space_ready) {
+        if (!vmm_create_user_space(&user_space)) {
+            serial_puts("[ERROR] cannot create user page tables.\n");
+            return 0;
+        }
+        user_space_ready = 1;
+    }
+
+    if (!vmm_space_allow_user(&user_space, user_code_page) ||
+        !vmm_space_allow_user(&user_space, user_stack_page)) {
+        serial_puts("[ERROR] cannot map user pages into user CR3.\n");
         return 0;
     }
 
-    serial_puts("[M0.14] user pages marked U: code=");
+    serial_puts("[M0.15] kernel CR3 = ");
+    serial_print_hex(vmm_kernel_cr3());
+    serial_puts("\n");
+    serial_puts("[M0.15] user   CR3 = ");
+    serial_print_hex(user_space.cr3);
+    serial_puts("\n");
+    serial_puts("[M0.15] user pages U in user space: code=");
     serial_print_hex(user_code_page);
     serial_puts(" stack=");
     serial_print_hex(user_stack_page);
@@ -90,8 +105,8 @@ user_on_syscall(uint64_t rax, uint64_t cs)
     }
 
     if (rax == LIBAI_SYS_EXIT) {
-        serial_puts("[M0.14] SYS_EXIT, returning to ring0.\n");
-        user_finished = 1;
+        serial_puts("[M0.15] SYS_EXIT, switching back to kernel CR3.\n");
+        vmm_switch(vmm_kernel_cr3());
         return 1;
     }
 
@@ -130,13 +145,15 @@ user_run(void)
     user_ss = LIBAI_GDT_USER_DS | LIBAI_GDT_RPL_USER;
     rflags = 0x202;
 
-    serial_puts("[M0.14] Entering ring3, RIP=");
+    serial_puts("[M0.15] Entering ring3 on user CR3, RIP=");
     serial_print_hex(user_rip);
     serial_puts(" CS=");
     serial_print_hex(user_cs);
     serial_puts(" RSP=");
     serial_print_hex(user_rsp);
     serial_puts("\n");
+
+    vmm_switch(user_space.cr3);
 
     __asm__ volatile (
         "pushq %[ss]\n\t"
