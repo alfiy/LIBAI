@@ -2,6 +2,8 @@
 #include "io.h"
 #include "kbd.h"
 #include "serial.h"
+#include "task.h"
+#include "task.h"
 
 #define PIC1_CMD  0x20
 #define PIC1_DATA 0x21
@@ -79,6 +81,9 @@ irq_handle(uint64_t vector)
 {
     if (vector == LIBAI_IRQ_TIMER_VECTOR) {
         timer_ticks++;
+        pic_eoi(vector);
+        task_preempt_tick();
+        return;
     } else if (vector == LIBAI_IRQ_KBD_VECTOR) {
         kbd_interrupt();
     }

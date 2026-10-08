@@ -3,6 +3,7 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "serial.h"
+#include "gdt.h"
 
 /*
  * M0.21: cooperative tasks.
@@ -216,4 +217,110 @@ task_demo(void)
     task_reap();
 
     serial_puts("[M0.21] both workers exited, stacks reclaimed\n");
+}
+
+static int preempt_on;
+static uint64_t slice_ticks;
+static uint64_t seen_a;
+static uint64_t seen_b;
+
+static void
+spin_a(void)
+{
+    serial_puts("[M0.22] A entered\n");
+    __asm__ volatile ("sti");
+    for (;;) {
+        if (current->turns != seen_a) {
+            seen_a = current->turns;
+            serial_puts("[M0.22] A slice ");
+            serial_print_u64(seen_a);
+            serial_puts("\n");
+        }
+        __asm__ volatile ("pause");
+    }
+}
+
+static void
+spin_b(void)
+{
+    serial_puts("[M0.22] B entered\n");
+    __asm__ volatile ("sti");
+    for (;;) {
+        if (current->turns != seen_b) {
+            seen_b = current->turns;
+            serial_puts("[M0.22] B slice ");
+            serial_print_u64(seen_b);
+            serial_puts("\n");
+        }
+        __asm__ volatile ("pause");
+    }
+}
+
+void
+task_preempt_tick(void)
+{
+    struct task *next;
+
+    if (!preempt_on || current == 0 || current->next == current) {
+        return;
+    }
+
+    slice_ticks++;
+    if (slice_ticks < 10) {
+        return;
+    }
+    slice_ticks = 0;
+
+    if (seen_a >= 3 && seen_b >= 3) {
+        preempt_on = 0;
+        if (current != shell_task) {
+            serial_puts("[M0.22] timer -> 0\n");
+            task_switch(current, shell_task);
+        }
+        return;
+    }
+
+    next = current->next;
+    if (next == shell_task) {
+        next = next->next;
+    }
+    if (next == 0 || next == shell_task) {
+        return;
+    }
+    next->turns++;
+    serial_puts("[M0.22] timer -> ");
+    serial_print_u64(next->id);
+    serial_puts("\n");
+    task_switch(current, next);
+}
+
+void
+task_preempt_demo(void)
+{
+    struct task shell;
+
+    shell.id = 0;
+    shell.fn = 0;
+    shell.turns = 0;
+    shell.stack = 0;
+    shell.next = &shell;
+    shell_task = &shell;
+    current = &shell;
+    seen_a = 0;
+    seen_b = 0;
+    slice_ticks = 0;
+
+    serial_puts("[M0.22] arming timer preemption\n");
+    if (task_spawn(spin_a) == 0 || task_spawn(spin_b) == 0) {
+        serial_puts("[ERROR] preempt spawn failed.\n");
+        return;
+    }
+
+    preempt_on = 1;
+    task_yield();
+    while (preempt_on) {
+        __asm__ volatile ("sti; hlt");
+    }
+
+    serial_puts("[M0.22] preemption done, back in shell\n");
 }

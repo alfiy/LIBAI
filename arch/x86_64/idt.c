@@ -6,6 +6,7 @@
 #include "gdt.h"
 #include "user.h"
 #include "vmm.h"
+#include "task.h"
 
 /*
  * M0.10: exceptions 0..31 still halt after a dump.
