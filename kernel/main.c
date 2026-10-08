@@ -10,6 +10,7 @@
 #include "kbd.h"
 #include "gdt.h"
 #include "user.h"
+#include "kmalloc.h"
 
 /*
  * M0.12 kernel
@@ -626,6 +627,14 @@ after_high_stack(uint64_t stack_phys)
     serial_print_u64(irq_ticks());
     serial_puts("\n");
     serial_puts("[M0.10] PIT IRQ0 successful.\n");
+
+    serial_puts("[M0.20] Kernel heap test...\n");
+    if (!kmalloc_self_test()) {
+        serial_puts("[ERROR] kmalloc self-test failed.\n");
+        libai_halt();
+    }
+    serial_puts("[M0.20] kmalloc split, free, and reuse ok.\n");
+
     kbd_shell();
 }
 
@@ -681,7 +690,7 @@ kbd_shell(void)
             if (n == 0) {
                 /* empty line */
             } else if (streq(line, "help")) {
-                serial_puts("commands: help ticks mem gdt cr3 rip win user pf halt\n");
+                serial_puts("commands: help ticks mem gdt cr3 rip win heap user pf halt\n");
             } else if (streq(line, "ticks")) {
                 serial_puts("ticks = ");
                 serial_print_u64(irq_ticks());
@@ -716,6 +725,12 @@ kbd_shell(void)
                     serial_print_hex(rsp);
                 }
                 serial_puts("\n");
+            } else if (streq(line, "heap")) {
+                if (kmalloc_self_test()) {
+                    serial_puts("heap ok\n");
+                } else {
+                    serial_puts("heap failed\n");
+                }
             } else if (streq(line, "user")) {
                 user_run();
                 serial_puts("[ERROR] user_run returned\n");
