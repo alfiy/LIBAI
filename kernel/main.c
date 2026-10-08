@@ -332,6 +332,7 @@ test_pmm(const LibaiBootInfo *info)
 
 static void test_vmm(void);
 static void after_higher_half(void);
+static void after_high_stack(uint64_t stack_phys);
 static void kbd_shell(void);
 
 void
@@ -534,6 +535,73 @@ after_higher_half(void)
         }
     }
 
+    {
+        uint64_t rsp;
+        uint64_t high_rsp;
+        uint64_t stack_phys = kernel_stack_base;
+        volatile uint32_t *slot;
+
+        __asm__ volatile ("mov %%rsp, %0" : "=r"(rsp));
+        high_rsp = vmm_to_higher(rsp);
+
+        serial_puts("[M0.19] old RSP = ");
+        serial_print_hex(rsp);
+        serial_puts("\n");
+        serial_puts("[M0.19] new RSP = ");
+        serial_print_hex(high_rsp);
+        serial_puts("\n");
+
+        kernel_stack_base = vmm_to_higher(kernel_stack_base);
+        kernel_stack_top = vmm_to_higher(kernel_stack_top);
+
+        /*
+         * RBP still points at the low frame. Unmap only after a call
+         * that builds a new frame on the high stack.
+         */
+        __asm__ volatile (
+            "mov %[sp], %%rsp\n\t"
+            "xor %%rbp, %%rbp\n\t"
+            "mov %[phys], %%rdi\n\t"
+            "call *%[fn]\n\t"
+            :
+            : [sp] "r"(high_rsp),
+              [phys] "r"(stack_phys),
+              [fn] "r"(after_high_stack)
+            : "memory"
+        );
+        libai_halt();
+    }
+}
+
+static void
+after_high_stack(uint64_t stack_phys)
+{
+    volatile uint32_t *slot =
+        (volatile uint32_t *)(uintptr_t)kernel_stack_base;
+
+    /*
+     * Probe the bottom of the stack, not RSP-16. A write just below
+     * RSP is reused by the next call and will not stay 0x19.
+     */
+    *slot = 0x19u;
+
+    if (!vmm_unmap_low_kernel(stack_phys, KERNEL_STACK_PAGES * LIBAI_PAGE_SIZE)) {
+        serial_puts("[ERROR] cannot unmap low kernel stack.\n");
+        libai_halt();
+    }
+
+    serial_puts("[M0.19] low stack present = ");
+    serial_print_u64(vmm_low_present(stack_phys));
+    serial_puts("\n");
+    serial_puts("[M0.19] high stack probe = ");
+    serial_print_hex(*slot);
+    serial_puts("\n");
+
+    if (vmm_low_present(stack_phys) != 0 || *slot != 0x19u) {
+        serial_puts("[ERROR] higher-half stack switch failed.\n");
+        libai_halt();
+    }
+
     gdt_init(kernel_stack_top);
     user_init(kernel_stack_top);
     if (gdt_read_cs() != LIBAI_GDT_KERNEL_CS) {
@@ -640,7 +708,13 @@ kbd_shell(void)
                 serial_puts("low 0x100000 present=");
                 serial_print_u64(vmm_low_present(0x100000));
                 serial_puts(" stack present=");
-                serial_print_u64(vmm_low_present(kernel_stack_base));
+                serial_print_u64(vmm_low_present(vmm_virt_to_phys(kernel_stack_base)));
+                serial_puts(" RSP=");
+                {
+                    uint64_t rsp;
+                    __asm__ volatile ("mov %%rsp, %0" : "=r"(rsp));
+                    serial_print_hex(rsp);
+                }
                 serial_puts("\n");
             } else if (streq(line, "user")) {
                 user_run();
