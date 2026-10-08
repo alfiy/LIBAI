@@ -1,5 +1,6 @@
 #include "pmm.h"
 #include "uefi_mmap.h"
+#include "vmm.h"
 
 /*
  * Bitmap page allocator.
@@ -134,7 +135,7 @@ pmm_init(const LibaiBootInfo *info, uint64_t stack_pointer)
     pmm_mark_range(0, LIBAI_PAGE_SIZE, 1);
 
     pmm_mark_range(
-        (uint64_t)(uintptr_t)__kernel_start,
+        vmm_virt_to_phys((uint64_t)(uintptr_t)__kernel_start),
         (uint64_t)(uintptr_t)(__kernel_end - __kernel_start),
         1
     );

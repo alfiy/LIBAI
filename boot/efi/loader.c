@@ -31,6 +31,7 @@
 #define EM_X86_64 62
 
 #define PT_LOAD 1
+#define LIBAI_HH_BASE 0xFFFFFFFF80000000ull
 
 typedef struct {
     unsigned char e_ident[EI_NIDENT];
@@ -67,6 +68,51 @@ typedef struct {
 
     uint64_t p_align;
 } Elf64_Phdr;
+
+static UINT64
+libai_virt_to_phys(UINT64 addr)
+{
+    if (addr >= LIBAI_HH_BASE) {
+        return addr - LIBAI_HH_BASE;
+    }
+    return addr;
+}
+
+static UINT64
+libai_segment_phys(const Elf64_Phdr *phdr)
+{
+    if (phdr->p_paddr != 0 && phdr->p_paddr < LIBAI_HH_BASE) {
+        return phdr->p_paddr;
+    }
+    return libai_virt_to_phys(phdr->p_vaddr);
+}
+
+/*
+ * Early map used only to enter a higher-half-linked kernel.
+ * Physical 0..1GiB is identity-mapped and also aliased at
+ * 0xFFFFFFFF80000000. The kernel replaces this with its own tables.
+ */
+static void
+libai_install_early_map(UINT64 pml4_phys)
+{
+    UINT64 *pml4 = (UINT64 *)(UINTN)pml4_phys;
+    UINT64 *pdpt = (UINT64 *)(UINTN)(pml4_phys + 0x1000);
+    UINT64 *pd = (UINT64 *)(UINTN)(pml4_phys + 0x2000);
+    UINT64 i;
+
+    for (i = 0; i < 512; i++) {
+        pml4[i] = 0;
+        pdpt[i] = 0;
+        pd[i] = (i * 0x200000ull) | 0x83ull;
+    }
+
+    pml4[0] = ((UINT64)(UINTN)pdpt) | 0x3ull;
+    pdpt[0] = ((UINT64)(UINTN)pd) | 0x3ull;
+    pml4[511] = ((UINT64)(UINTN)pdpt) | 0x3ull;
+    pdpt[510] = ((UINT64)(UINTN)pd) | 0x3ull;
+
+    __asm__ volatile ("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
+}
 
 static void
 fatal(const CHAR16 *message, EFI_STATUS status)
@@ -391,8 +437,8 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         }
 
         UINT64 PageSize = 0x1000;
-        UINT64 SegmentStart = phdr->p_vaddr;
-        UINT64 SegmentEnd = phdr->p_vaddr + phdr->p_memsz;
+        UINT64 SegmentStart = libai_segment_phys(phdr);
+        UINT64 SegmentEnd = SegmentStart + phdr->p_memsz;
         UINT64 PageStart = SegmentStart & ~(PageSize - 1);
         UINT64 PageEnd =
             (SegmentEnd + PageSize - 1) & ~(PageSize - 1);
@@ -436,7 +482,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
         if (phdr->p_filesz > 0) {
             CopyMem(
-                (void *)(UINTN)phdr->p_vaddr,
+                (void *)(UINTN)SegmentStart,
                 (uint8_t *)KernelBuffer + phdr->p_offset,
                 (UINTN)phdr->p_filesz
             );
@@ -447,7 +493,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
               phdr->p_memsz - phdr->p_filesz);
 
         if (phdr->p_filesz >= 4) {
-            uint8_t *Loaded = (uint8_t *)(UINTN)phdr->p_vaddr;
+            uint8_t *Loaded = (uint8_t *)(UINTN)SegmentStart;
 
             Print(
                 L"        Memory  : %02x %02x %02x %02x\r\n",
@@ -501,7 +547,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
         if (phdr->p_filesz > 0) {
             uint8_t *Loaded =
-                (uint8_t *)(UINTN)phdr->p_vaddr;
+                (uint8_t *)(UINTN)libai_segment_phys(phdr);
             uint8_t *Expected =
                 (uint8_t *)KernelBuffer + phdr->p_offset;
 
@@ -530,7 +576,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         if (ZeroSize > 0) {
             uint8_t *ZeroArea =
                 (uint8_t *)(UINTN)(
-                    phdr->p_vaddr + phdr->p_filesz
+                    libai_segment_phys(phdr) + phdr->p_filesz
                 );
 
             for (UINT64 j = 0; j < ZeroSize; j++) {
@@ -576,7 +622,8 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
      * that is ordinary memory write, not a Boot Service.
      * ============================================================
      */
-    UINT64 KernelEntry = ehdr->e_entry;
+    UINT64 KernelEntryVirt = ehdr->e_entry;
+    UINT64 KernelEntry = libai_virt_to_phys(KernelEntryVirt);
     LibaiBootInfo *BootInfo = NULL;
 
     status = uefi_call_wrapper(
@@ -595,7 +642,7 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     SetMem(BootInfo, sizeof(LibaiBootInfo), 0);
     BootInfo->magic = LIBAI_BOOTINFO_MAGIC;
-    BootInfo->kernel_entry = KernelEntry;
+    BootInfo->kernel_entry = KernelEntryVirt;
 
     Print(L"\r\n");
     Print(L"[M0.4] BootInfo allocated at: 0x%lx\r\n",
@@ -603,7 +650,28 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     Print(L"[M0.4] BootInfo magic: 0x%lx\r\n",
           (UINT64)BootInfo->magic);
     Print(L"[M0.3.3] Preparing to exit UEFI Boot Services...\r\n");
-    Print(L"[M0.3.4] Kernel entry: 0x%lx\r\n", KernelEntry);
+    Print(L"[M0.17] Kernel entry virt: 0x%lx\r\n", KernelEntryVirt);
+    Print(L"[M0.17] Kernel entry phys: 0x%lx\r\n", KernelEntry);
+
+    EFI_PHYSICAL_ADDRESS EarlyMap = 0;
+    status = uefi_call_wrapper(
+        BS->AllocatePages,
+        4,
+        AllocateAnyPages,
+        EfiLoaderData,
+        3,
+        &EarlyMap
+    );
+    if (EFI_ERROR(status) || EarlyMap == 0) {
+        Print(L"[ERROR] AllocatePages(early map) failed.\r\n");
+        Print(L"        EFI_STATUS = %r\r\n", status);
+        halt();
+    }
+    SetMem((void *)(UINTN)EarlyMap, 3 * 0x1000, 0);
+    Print(L"[M0.17] Early page tables at: 0x%lx\r\n", (UINT64)EarlyMap);
+    Print(L"[M0.17] Will load CR3 and jump to virtual entry.\r\n");
+
+    Print(L"[M0.3.4] Kernel entry (jump): 0x%lx\r\n", KernelEntryVirt);
     Print(L"[M0.4] Will pass BootInfo* in rdi after EBS.\r\n");
 
     UINTN MemoryMapSize = 0;
@@ -738,8 +806,10 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     __asm__ volatile ("cli");
 
+    libai_install_early_map((UINT64)EarlyMap);
+
     typedef void (*LibaiKernelEntry)(LibaiBootInfo *);
-    LibaiKernelEntry entry = (LibaiKernelEntry)(UINTN)KernelEntry;
+    LibaiKernelEntry entry = (LibaiKernelEntry)(UINTN)KernelEntryVirt;
 
     entry(BootInfo);
 

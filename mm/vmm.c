@@ -265,6 +265,12 @@ vmm_init_identity(void)
 
     vmm_k_cr3 = (uint64_t)(uintptr_t)vmm_k_pml4;
 
+    /*
+     * RIP is already in the higher half. The new CR3 must alias
+     * that window before it is loaded, or the next instruction faults.
+     */
+    vmm_install_higher_half(vmm_k_pml4, vmm_k_pdpt, vmm_k_pd);
+
     info.pml4 = (uint64_t)(uintptr_t)vmm_k_pml4;
     info.pdpt = (uint64_t)(uintptr_t)vmm_k_pdpt;
     info.pd = (uint64_t)(uintptr_t)vmm_k_pd;

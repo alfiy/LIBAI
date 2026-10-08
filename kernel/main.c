@@ -497,6 +497,14 @@ after_higher_half(void)
     }
 
     serial_puts("[M0.16] Higher-half window active.\n");
+    {
+        extern char __kernel_start[];
+
+        serial_puts("[M0.17] kernel linked in higher half\n");
+        serial_puts("[M0.17] __kernel_start = ");
+        serial_print_hex((uint64_t)(uintptr_t)__kernel_start);
+        serial_puts("\n");
+    }
 
     gdt_init(kernel_stack_top);
     user_init(kernel_stack_top);
@@ -670,18 +678,24 @@ switch_to_kernel_stack(void)
     serial_puts(" bytes\n");
     print_pmm_stats("[M0.7] after alloc  ");
 
-    __asm__ volatile (
-        "mov %[top], %%rsp\n\t"
-        "xor %%rbp, %%rbp\n\t"
-        "call *%[fn]\n\t"
-        "1:\n\t"
-        "hlt\n\t"
-        "jmp 1b\n\t"
-        :
-        : [top] "r"(top),
-          [fn] "r"(kernel_on_new_stack)
-        : "memory"
-    );
+    {
+        uint64_t fn = vmm_virt_to_phys(
+            (uint64_t)(uintptr_t)kernel_on_new_stack
+        );
+
+        __asm__ volatile (
+            "mov %[top], %%rsp\n\t"
+            "xor %%rbp, %%rbp\n\t"
+            "call *%[fn]\n\t"
+            "1:\n\t"
+            "hlt\n\t"
+            "jmp 1b\n\t"
+            :
+            : [top] "r"(top),
+              [fn] "r"(fn)
+            : "memory"
+        );
+    }
 }
 
 void

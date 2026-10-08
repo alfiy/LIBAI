@@ -15,9 +15,21 @@
 #define LIBAI_HH_PDPT_INDEX     510
 
 static inline uint64_t
-vmm_to_higher(uint64_t phys)
+vmm_to_higher(uint64_t addr)
 {
-    return phys + LIBAI_HH_BASE;
+    if (addr >= LIBAI_HH_BASE) {
+        return addr;
+    }
+    return addr + LIBAI_HH_BASE;
+}
+
+static inline uint64_t
+vmm_virt_to_phys(uint64_t addr)
+{
+    if (addr >= LIBAI_HH_BASE) {
+        return addr - LIBAI_HH_BASE;
+    }
+    return addr;
 }
 
 typedef struct {
