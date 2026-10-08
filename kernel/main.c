@@ -11,6 +11,7 @@
 #include "gdt.h"
 #include "user.h"
 #include "kmalloc.h"
+#include "task.h"
 
 /*
  * M0.12 kernel
@@ -690,7 +691,7 @@ kbd_shell(void)
             if (n == 0) {
                 /* empty line */
             } else if (streq(line, "help")) {
-                serial_puts("commands: help ticks mem gdt cr3 rip win heap user pf halt\n");
+                serial_puts("commands: help ticks mem gdt cr3 rip win heap task user pf halt\n");
             } else if (streq(line, "ticks")) {
                 serial_puts("ticks = ");
                 serial_print_u64(irq_ticks());
@@ -731,6 +732,8 @@ kbd_shell(void)
                 } else {
                     serial_puts("heap failed\n");
                 }
+            } else if (streq(line, "task")) {
+                task_demo();
             } else if (streq(line, "user")) {
                 user_run();
                 serial_puts("[ERROR] user_run returned\n");
