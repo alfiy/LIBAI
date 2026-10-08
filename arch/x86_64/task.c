@@ -3,6 +3,7 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "serial.h"
+#include "irq.h"
 #include "gdt.h"
 
 /*
@@ -20,6 +21,8 @@ struct task {
     struct task *next;
     void (*fn)(void);
     uint64_t turns;
+    uint64_t wake_tick;
+    int sleeping;
 };
 
 static struct task *current;
@@ -79,6 +82,12 @@ task_yield(void)
     if (next == 0) {
         next = prev;
     }
+    while (next->sleeping && next != prev) {
+        next = next->next;
+    }
+    if (next->sleeping) {
+        return;
+    }
     task_switch(prev, next);
     task_reap();
 }
@@ -127,6 +136,8 @@ task_spawn(void (*fn)(void))
     t->id = next_id++;
     t->fn = fn;
     t->turns = 0;
+    t->wake_tick = 0;
+    t->sleeping = 0;
     t->stack = (uint64_t)(uintptr_t)vmm_to_higher(phys);
     sp = (uint64_t *)(uintptr_t)(t->stack + LIBAI_PAGE_SIZE);
 
@@ -208,6 +219,8 @@ task_demo(void)
     serial_puts("[M0.21] cooperative tasks, shell id=0\n");
     if (task_spawn(worker_a) == 0 || task_spawn(worker_b) == 0) {
         serial_puts("[ERROR] task_spawn failed.\n");
+        shell_task = 0;
+        current = 0;
         return;
     }
 
@@ -215,6 +228,8 @@ task_demo(void)
         task_yield();
     }
     task_reap();
+    shell_task = 0;
+    current = 0;
 
     serial_puts("[M0.21] both workers exited, stacks reclaimed\n");
 }
@@ -260,6 +275,24 @@ void
 task_preempt_tick(void)
 {
     struct task *next;
+    struct task *scan;
+    uint64_t now;
+
+    now = irq_ticks();
+    scan = shell_task;
+    if (scan != 0) {
+        do {
+            if (scan->sleeping && now >= scan->wake_tick) {
+                scan->sleeping = 0;
+                serial_puts("[M0.23] wake id=");
+                serial_print_u64(scan->id);
+                serial_puts(" at ");
+                serial_print_u64(now);
+                serial_puts("\n");
+            }
+            scan = scan->next;
+        } while (scan != shell_task);
+    }
 
     if (!preempt_on || current == 0 || current->next == current) {
         return;
@@ -313,6 +346,8 @@ task_preempt_demo(void)
     serial_puts("[M0.22] arming timer preemption\n");
     if (task_spawn(spin_a) == 0 || task_spawn(spin_b) == 0) {
         serial_puts("[ERROR] preempt spawn failed.\n");
+        shell_task = 0;
+        current = 0;
         return;
     }
 
@@ -323,4 +358,74 @@ task_preempt_demo(void)
     }
 
     serial_puts("[M0.22] preemption done, back in shell\n");
+    shell_task = 0;
+    current = 0;
+}
+
+static void
+task_sleep(uint64_t ticks)
+{
+    current->wake_tick = irq_ticks() + ticks;
+    current->sleeping = 1;
+    serial_puts("[M0.23] id=");
+    serial_print_u64(current->id);
+    serial_puts(" sleep until ");
+    serial_print_u64(current->wake_tick);
+    serial_puts("\n");
+    task_yield();
+}
+
+static void
+sleeper(void)
+{
+    serial_puts("[M0.23] sleeper start ");
+    serial_print_u64(irq_ticks());
+    serial_puts("\n");
+    task_sleep(50);
+    serial_puts("[M0.23] sleeper resumed ");
+    serial_print_u64(irq_ticks());
+    serial_puts("\n");
+}
+
+static void
+keeper(void)
+{
+    uint64_t i;
+
+    for (i = 0; i < 3; i++) {
+        serial_puts("[M0.23] other task running\n");
+        task_yield();
+    }
+}
+
+void
+task_sleep_demo(void)
+{
+    struct task shell;
+
+    shell.id = 0;
+    shell.fn = 0;
+    shell.turns = 0;
+    shell.stack = 0;
+    shell.wake_tick = 0;
+    shell.sleeping = 0;
+    shell.next = &shell;
+    shell_task = &shell;
+    current = &shell;
+
+    serial_puts("[M0.23] blocking sleep\n");
+    if (task_spawn(sleeper) == 0 || task_spawn(keeper) == 0) {
+        serial_puts("[ERROR] sleep spawn failed.\n");
+        shell_task = 0;
+        current = 0;
+        return;
+    }
+
+    while (shell.next != &shell) {
+        task_yield();
+    }
+    task_reap();
+    shell_task = 0;
+    current = 0;
+    serial_puts("[M0.23] sleep demo done\n");
 }

@@ -5,6 +5,7 @@
 
 void task_demo(void);
 void task_preempt_demo(void);
+void task_sleep_demo(void);
 void task_preempt_tick(void);
 
 #endif
