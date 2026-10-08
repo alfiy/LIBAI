@@ -499,11 +499,39 @@ after_higher_half(void)
     serial_puts("[M0.16] Higher-half window active.\n");
     {
         extern char __kernel_start[];
+        extern char __kernel_end[];
+        uint64_t kphys = vmm_virt_to_phys((uint64_t)(uintptr_t)__kernel_start);
+        uint64_t kbytes = (uint64_t)(uintptr_t)(__kernel_end - __kernel_start);
+        volatile uint32_t *high =
+            (volatile uint32_t *)(uintptr_t)vmm_to_higher(0x100000);
 
         serial_puts("[M0.17] kernel linked in higher half\n");
         serial_puts("[M0.17] __kernel_start = ");
         serial_print_hex((uint64_t)(uintptr_t)__kernel_start);
         serial_puts("\n");
+
+        serial_puts("[M0.18] Unmapping low kernel window ");
+        serial_print_hex(kphys);
+        serial_puts(" bytes=");
+        serial_print_u64(kbytes);
+        serial_puts("\n");
+
+        if (!vmm_unmap_low_kernel(kphys, kbytes)) {
+            serial_puts("[ERROR] cannot unmap low kernel window.\n");
+            libai_halt();
+        }
+
+        serial_puts("[M0.18] low  0x100000 present = ");
+        serial_print_u64(vmm_low_present(0x100000));
+        serial_puts("\n");
+        serial_puts("[M0.18] high kernel still reads ");
+        serial_print_hex(high[0]);
+        serial_puts("\n");
+
+        if (vmm_low_present(0x100000) != 0) {
+            serial_puts("[ERROR] low kernel page is still present.\n");
+            libai_halt();
+        }
     }
 
     gdt_init(kernel_stack_top);
@@ -585,7 +613,7 @@ kbd_shell(void)
             if (n == 0) {
                 /* empty line */
             } else if (streq(line, "help")) {
-                serial_puts("commands: help ticks mem gdt cr3 rip user pf halt\n");
+                serial_puts("commands: help ticks mem gdt cr3 rip win user pf halt\n");
             } else if (streq(line, "ticks")) {
                 serial_puts("ticks = ");
                 serial_print_u64(irq_ticks());
@@ -607,6 +635,12 @@ kbd_shell(void)
                 serial_print_hex(vmm_read_cr3());
                 serial_puts(" kernel=");
                 serial_print_hex(vmm_kernel_cr3());
+                serial_puts("\n");
+            } else if (streq(line, "win")) {
+                serial_puts("low 0x100000 present=");
+                serial_print_u64(vmm_low_present(0x100000));
+                serial_puts(" stack present=");
+                serial_print_u64(vmm_low_present(kernel_stack_base));
                 serial_puts("\n");
             } else if (streq(line, "user")) {
                 user_run();

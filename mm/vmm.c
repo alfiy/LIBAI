@@ -165,8 +165,24 @@ vmm_space_allow_user(LibaiAddrSpace *space, uint64_t virt)
 static void
 vmm_install_higher_half(uint64_t *pml4, uint64_t *pdpt, uint64_t *pd)
 {
+    uint64_t *high_pd;
+    uint64_t i;
+
+    /*
+     * Own PD for the high window. Sharing the low PD would make
+     * "unmap kernel at 0x100000" also unmap 0xFFFFFFFF80100000.
+     */
+    high_pd = vmm_alloc_table();
+    if (high_pd == 0) {
+        return;
+    }
+
+    for (i = 0; i < 512; i++) {
+        high_pd[i] = pd[i];
+    }
+
     pdpt[LIBAI_HH_PDPT_INDEX] =
-        (uint64_t)(uintptr_t)pd |
+        (uint64_t)(uintptr_t)high_pd |
         LIBAI_VMM_PAGE_PRESENT |
         LIBAI_VMM_PAGE_WRITE;
 
@@ -202,6 +218,62 @@ vmm_map_higher_half(void)
     vmm_install_higher_half(vmm_k_pml4, vmm_k_pdpt, vmm_k_pd);
     vmm_switch(vmm_k_cr3);
     return 1;
+}
+
+int
+vmm_unmap_low_kernel(uint64_t phys, uint64_t bytes)
+{
+    uint64_t page;
+    uint64_t end;
+
+    if (vmm_k_pd == 0 || bytes == 0) {
+        return 0;
+    }
+
+    end = phys + bytes;
+    for (page = phys & ~(LIBAI_PAGE_SIZE - 1); page < end; page += LIBAI_PAGE_SIZE) {
+        uint64_t pd_index = page / 0x200000ull;
+        uint64_t pt_index;
+        uint64_t *pt;
+
+        if (!vmm_split_large_page(vmm_k_pd, pd_index)) {
+            return 0;
+        }
+
+        pt = (uint64_t *)(uintptr_t)(vmm_k_pd[pd_index] & ~0xFFFull);
+        pt_index = (page / LIBAI_PAGE_SIZE) % 512;
+        pt[pt_index] = 0;
+    }
+
+    vmm_switch(vmm_k_cr3);
+    return 1;
+}
+
+int
+vmm_low_present(uint64_t phys)
+{
+    uint64_t pd_index;
+    uint64_t entry;
+
+    if (vmm_k_pd == 0 || phys >= LIBAI_PMM_MAX_PHYS) {
+        return 0;
+    }
+
+    pd_index = phys / 0x200000ull;
+    entry = vmm_k_pd[pd_index];
+    if ((entry & LIBAI_VMM_PAGE_PRESENT) == 0) {
+        return 0;
+    }
+
+    if (entry & LIBAI_VMM_PAGE_LARGE) {
+        return 1;
+    }
+
+    {
+        uint64_t *pt = (uint64_t *)(uintptr_t)(entry & ~0xFFFull);
+        uint64_t pt_index = (phys / LIBAI_PAGE_SIZE) % 512;
+        return (pt[pt_index] & LIBAI_VMM_PAGE_PRESENT) != 0;
+    }
 }
 
 uint64_t

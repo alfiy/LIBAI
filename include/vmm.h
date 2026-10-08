@@ -57,6 +57,8 @@ int vmm_space_allow_user(LibaiAddrSpace *space, uint64_t virt);
 
 int vmm_allow_user(uint64_t virt);
 int vmm_map_higher_half(void);
+int vmm_unmap_low_kernel(uint64_t phys, uint64_t bytes);
+int vmm_low_present(uint64_t phys);
 void vmm_jump_higher(void (*cont)(void));
 uint64_t vmm_read_rip(void);
 
