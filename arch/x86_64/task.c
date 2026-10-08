@@ -23,10 +23,23 @@ struct task {
 
 static struct task *current;
 static struct task *shell_task;
+static struct task *dead;
 static uint64_t next_id = 1;
 
 static void task_yield(void);
 static void task_exit(void);
+static void task_reap(void);
+
+static void
+task_reap(void)
+{
+    while (dead != 0) {
+        struct task *t = dead;
+        dead = t->next;
+        pmm_free_page(vmm_virt_to_phys(t->stack));
+        kfree(t);
+    }
+}
 
 /*
  * rsp is the first field, so (%rdi) is prev->rsp and (%rsi) is next->rsp.
@@ -66,6 +79,7 @@ task_yield(void)
         next = prev;
     }
     task_switch(prev, next);
+    task_reap();
 }
 
 static void
@@ -73,15 +87,19 @@ task_exit(void)
 {
     struct task *me = current;
     struct task *scan = shell_task;
+    struct task *next;
 
     while (scan->next != me) {
         scan = scan->next;
     }
-    scan->next = me->next;
+    next = me->next;
+    scan->next = next;
+    me->next = dead;
+    dead = me;
     serial_puts("[M0.21] task ");
     serial_print_u64(me->id);
     serial_puts(" exit\n");
-    task_switch(me, me->next);
+    task_switch(me, next);
 }
 
 static void
@@ -141,11 +159,15 @@ static void
 worker_a(void)
 {
     uint64_t i;
+    uint64_t rsp;
 
     for (i = 0; i < 3; i++) {
         current->turns++;
+        __asm__ volatile ("mov %%rsp, %0" : "=r"(rsp));
         serial_puts("[M0.21] A turn ");
         serial_print_u64(current->turns);
+        serial_puts(" RSP=");
+        serial_print_hex(rsp);
         serial_puts("\n");
         task_yield();
     }
@@ -155,11 +177,15 @@ static void
 worker_b(void)
 {
     uint64_t i;
+    uint64_t rsp;
 
     for (i = 0; i < 3; i++) {
         current->turns++;
+        __asm__ volatile ("mov %%rsp, %0" : "=r"(rsp));
         serial_puts("[M0.21] B turn ");
         serial_print_u64(current->turns);
+        serial_puts(" RSP=");
+        serial_print_hex(rsp);
         serial_puts("\n");
         task_yield();
     }
@@ -187,6 +213,7 @@ task_demo(void)
     while (shell.next != &shell) {
         task_yield();
     }
+    task_reap();
 
-    serial_puts("[M0.21] both workers exited, back in shell\n");
+    serial_puts("[M0.21] both workers exited, stacks reclaimed\n");
 }
