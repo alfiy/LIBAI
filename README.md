@@ -8,6 +8,7 @@ Ubuntu 上需要：
 
 ```bash
 sudo apt install build-essential gnu-efi qemu-system-x86 ovmf gdb
+sudo apt install dosfstools mtools
 ```
 
 固件默认是 `/usr/share/OVMF/OVMF_CODE_4M.fd`。路径不同时：

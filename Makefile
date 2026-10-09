@@ -31,13 +31,21 @@ LOADER_CFLAGS := -Iinclude -I/usr/include/efi -I/usr/include/efi/x86_64 \
 
 .PHONY: all kernel loader esp qemu qemu-gdb gdb clean
 
-all: esp
+all: esp $(BUILD)/esp.img
 
 kernel: $(BUILD)/libai-kernel.elf
 
 loader: $(BUILD)/BOOTX64.EFI
 
 esp: $(ESP)/EFI/BOOT/BOOTX64.EFI $(ESP)/libai-kernel.elf
+
+$(ESP)/EFI/BOOT/BOOTX64.EFI: $(BUILD)/BOOTX64.EFI
+	@mkdir -p $(dir $@)
+	cp $< $@
+
+$(ESP)/libai-kernel.elf: $(BUILD)/libai-kernel.elf
+	@mkdir -p $(dir $@)
+	cp $< $@
 
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -55,32 +63,33 @@ $(BUILD)/loader.so: $(BUILD)/loader.o
 		-L/usr/lib /usr/lib/crt0-efi-x86_64.o $< -o $@ -lefi -lgnuefi
 
 $(BUILD)/BOOTX64.EFI: $(BUILD)/loader.so
-	objcopy -j .text -j .sdata -j .data -j .dynamic \
-		-j .dynsym -j .rel -j .rela -j .reloc \
+	objcopy -j .text -j .sdata -j .data -j .rodata -j .dynamic \
+		-j .dynsym -j .rel -j .rela -j .rel.dyn -j .rela.dyn -j .reloc \
 		--target=efi-app-x86_64 $< $@
 
-$(ESP)/EFI/BOOT/BOOTX64.EFI: $(BUILD)/BOOTX64.EFI
-	@mkdir -p $(dir $@)
-	cp $< $@
+$(BUILD)/esp.img: $(BUILD)/BOOTX64.EFI $(BUILD)/libai-kernel.elf
+	rm -f $@
+	dd if=/dev/zero of=$@ bs=1M count=32 status=none
+	mkfs.vfat -F 16 $@ >/dev/null
+	mmd -i $@ ::/EFI
+	mmd -i $@ ::/EFI/BOOT
+	mcopy -i $@ $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+	mcopy -i $@ $(BUILD)/libai-kernel.elf ::/libai-kernel.elf
 
-$(ESP)/libai-kernel.elf: $(BUILD)/libai-kernel.elf
-	@mkdir -p $(dir $@)
-	cp $< $@
-
-qemu: esp
+qemu: $(BUILD)/esp.img
 	qemu-system-x86_64 -machine q35 -m 512M -nographic \
 		-serial mon:stdio \
 		-monitor telnet:127.0.0.1:45454,server,nowait \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF) \
-		-drive format=raw,file=fat:rw:$(ESP)
+		-drive format=raw,file=$(BUILD)/esp.img
 
-qemu-gdb: esp
+qemu-gdb: $(BUILD)/esp.img
 	@echo "gdbstub ready"
 	qemu-system-x86_64 -machine q35 -m 512M -nographic \
 		-serial mon:stdio -s -S \
 		-monitor telnet:127.0.0.1:45454,server,nowait \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF) \
-		-drive format=raw,file=fat:rw:$(ESP)
+		-drive format=raw,file=$(BUILD)/esp.img
 
 gdb: kernel
 	gdb -x scripts/gdbinit $(BUILD)/libai-kernel.elf
