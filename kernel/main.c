@@ -740,6 +740,8 @@ kbd_shell(void)
                 task_sleep_demo();
             } else if (streq(line, "event")) {
                 task_event_demo();
+            } else if (streq(line, "lock")) {
+                task_lock_demo();
             } else if (streq(line, "user")) {
                 user_run();
                 serial_puts("[ERROR] user_run returned\n");

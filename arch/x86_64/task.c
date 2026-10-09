@@ -24,6 +24,7 @@ struct task {
     uint64_t wake_tick;
     int sleeping;
     int waiting;
+    void *wait_obj;
 };
 
 static struct task *current;
@@ -140,6 +141,7 @@ task_spawn(void (*fn)(void))
     t->wake_tick = 0;
     t->sleeping = 0;
     t->waiting = 0;
+    t->wait_obj = 0;
     t->stack = (uint64_t)(uintptr_t)vmm_to_higher(phys);
     sp = (uint64_t *)(uintptr_t)(t->stack + LIBAI_PAGE_SIZE);
 
@@ -511,4 +513,102 @@ task_event_demo(void)
     shell_task = 0;
     current = 0;
     serial_puts("[M0.24] event demo done\n");
+}
+
+struct libai_mutex {
+    int locked;
+};
+
+static struct libai_mutex demo_lock;
+static uint64_t shared_counter;
+
+static void
+mutex_lock(struct libai_mutex *lock)
+{
+    while (lock->locked) {
+        current->wait_obj = lock;
+        current->waiting = 1;
+        serial_puts("[M0.25] id=");
+        serial_print_u64(current->id);
+        serial_puts(" blocks on lock\n");
+        task_yield();
+    }
+    lock->locked = 1;
+    current->wait_obj = 0;
+    serial_puts("[M0.25] id=");
+    serial_print_u64(current->id);
+    serial_puts(" holds lock\n");
+}
+
+static void
+mutex_unlock(struct libai_mutex *lock)
+{
+    struct task *scan = shell_task;
+
+    lock->locked = 0;
+    serial_puts("[M0.25] id=");
+    serial_print_u64(current->id);
+    serial_puts(" unlocks\n");
+    if (scan == 0) {
+        return;
+    }
+    do {
+        if (scan->waiting && scan->wait_obj == lock) {
+            scan->waiting = 0;
+            scan->wait_obj = 0;
+            serial_puts("[M0.25] wake waiter id=");
+            serial_print_u64(scan->id);
+            serial_puts("\n");
+            return;
+        }
+        scan = scan->next;
+    } while (scan != shell_task);
+}
+
+static void
+lock_worker(void)
+{
+    mutex_lock(&demo_lock);
+    shared_counter++;
+    serial_puts("[M0.25] counter=");
+    serial_print_u64(shared_counter);
+    serial_puts("\n");
+    task_yield();
+    mutex_unlock(&demo_lock);
+}
+
+void
+task_lock_demo(void)
+{
+    struct task shell;
+
+    shell.id = 0;
+    shell.fn = 0;
+    shell.turns = 0;
+    shell.stack = 0;
+    shell.wake_tick = 0;
+    shell.sleeping = 0;
+    shell.waiting = 0;
+    shell.wait_obj = 0;
+    shell.next = &shell;
+    shell_task = &shell;
+    current = &shell;
+    demo_lock.locked = 0;
+    shared_counter = 0;
+
+    serial_puts("[M0.25] mutex\n");
+    if (task_spawn(lock_worker) == 0 || task_spawn(lock_worker) == 0) {
+        serial_puts("[ERROR] lock spawn failed.\n");
+        shell_task = 0;
+        current = 0;
+        return;
+    }
+
+    while (shell.next != &shell) {
+        task_yield();
+    }
+    task_reap();
+    shell_task = 0;
+    current = 0;
+    serial_puts("[M0.25] mutex demo done\n");
 }
