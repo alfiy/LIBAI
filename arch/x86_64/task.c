@@ -23,6 +23,7 @@ struct task {
     uint64_t turns;
     uint64_t wake_tick;
     int sleeping;
+    int waiting;
 };
 
 static struct task *current;
@@ -82,10 +83,10 @@ task_yield(void)
     if (next == 0) {
         next = prev;
     }
-    while (next->sleeping && next != prev) {
+    while ((next->sleeping || next->waiting) && next != prev) {
         next = next->next;
     }
-    if (next->sleeping) {
+    if (next->sleeping || next->waiting) {
         return;
     }
     task_switch(prev, next);
@@ -138,6 +139,7 @@ task_spawn(void (*fn)(void))
     t->turns = 0;
     t->wake_tick = 0;
     t->sleeping = 0;
+    t->waiting = 0;
     t->stack = (uint64_t)(uintptr_t)vmm_to_higher(phys);
     sp = (uint64_t *)(uintptr_t)(t->stack + LIBAI_PAGE_SIZE);
 
@@ -428,4 +430,85 @@ task_sleep_demo(void)
     shell_task = 0;
     current = 0;
     serial_puts("[M0.23] sleep demo done\n");
+}
+
+static void
+task_wait(void)
+{
+    current->waiting = 1;
+    serial_puts("[M0.24] id=");
+    serial_print_u64(current->id);
+    serial_puts(" waiting for event\n");
+    task_yield();
+}
+
+static void
+task_signal(void)
+{
+    struct task *scan = shell_task;
+
+    if (scan == 0) {
+        return;
+    }
+    do {
+        if (scan->waiting) {
+            scan->waiting = 0;
+            serial_puts("[M0.24] signal id=");
+            serial_print_u64(scan->id);
+            serial_puts("\n");
+            return;
+        }
+        scan = scan->next;
+    } while (scan != shell_task);
+    serial_puts("[M0.24] signal with nobody waiting\n");
+}
+
+static void
+event_waiter(void)
+{
+    serial_puts("[M0.24] waiter blocks\n");
+    task_wait();
+    serial_puts("[M0.24] waiter resumed\n");
+}
+
+static void
+event_sender(void)
+{
+    serial_puts("[M0.24] sender runs before signal\n");
+    task_yield();
+    task_signal();
+    serial_puts("[M0.24] sender done\n");
+}
+
+void
+task_event_demo(void)
+{
+    struct task shell;
+
+    shell.id = 0;
+    shell.fn = 0;
+    shell.turns = 0;
+    shell.stack = 0;
+    shell.wake_tick = 0;
+    shell.sleeping = 0;
+    shell.waiting = 0;
+    shell.next = &shell;
+    shell_task = &shell;
+    current = &shell;
+
+    serial_puts("[M0.24] event wait\n");
+    if (task_spawn(event_waiter) == 0 || task_spawn(event_sender) == 0) {
+        serial_puts("[ERROR] event spawn failed.\n");
+        shell_task = 0;
+        current = 0;
+        return;
+    }
+
+    while (shell.next != &shell) {
+        task_yield();
+    }
+    task_reap();
+    shell_task = 0;
+    current = 0;
+    serial_puts("[M0.24] event demo done\n");
 }
