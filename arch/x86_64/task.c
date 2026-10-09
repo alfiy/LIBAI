@@ -25,6 +25,7 @@ struct task {
     int sleeping;
     int waiting;
     void *wait_obj;
+    int wait_for;
 };
 
 static struct task *current;
@@ -611,4 +612,143 @@ task_lock_demo(void)
     shell_task = 0;
     current = 0;
     serial_puts("[M0.25] mutex demo done\n");
+}
+
+#define MBOX_WANT_DATA  1
+#define MBOX_WANT_SPACE 2
+
+struct libai_mbox {
+    int full;
+    uint64_t value;
+};
+
+static struct libai_mbox demo_mbox;
+
+static void
+mbox_wake(struct libai_mbox *box, int reason)
+{
+    struct task *scan = shell_task;
+
+    if (scan == 0) {
+        return;
+    }
+    do {
+        if (scan->waiting && scan->wait_obj == box && scan->wait_for == reason) {
+            scan->waiting = 0;
+            scan->wait_obj = 0;
+            scan->wait_for = 0;
+            serial_puts("[M0.26] wake id=");
+            serial_print_u64(scan->id);
+            serial_puts(reason == MBOX_WANT_DATA ? " for data\n" : " for space\n");
+            return;
+        }
+        scan = scan->next;
+    } while (scan != shell_task);
+}
+
+static void
+mbox_send(struct libai_mbox *box, uint64_t value)
+{
+    while (box->full) {
+        current->wait_obj = box;
+        current->wait_for = MBOX_WANT_SPACE;
+        current->waiting = 1;
+        serial_puts("[M0.26] id=");
+        serial_print_u64(current->id);
+        serial_puts(" blocks, box full\n");
+        task_yield();
+    }
+    box->value = value;
+    box->full = 1;
+    serial_puts("[M0.26] sent ");
+    serial_print_u64(value);
+    serial_puts("\n");
+    mbox_wake(box, MBOX_WANT_DATA);
+}
+
+static uint64_t
+mbox_recv(struct libai_mbox *box)
+{
+    uint64_t value;
+
+    while (!box->full) {
+        current->wait_obj = box;
+        current->wait_for = MBOX_WANT_DATA;
+        current->waiting = 1;
+        serial_puts("[M0.26] id=");
+        serial_print_u64(current->id);
+        serial_puts(" blocks, box empty\n");
+        task_yield();
+    }
+    value = box->value;
+    box->full = 0;
+    serial_puts("[M0.26] recv ");
+    serial_print_u64(value);
+    serial_puts("\n");
+    mbox_wake(box, MBOX_WANT_SPACE);
+    return value;
+}
+
+static void
+mbox_producer(void)
+{
+    mbox_send(&demo_mbox, 11);
+    task_yield();
+    mbox_send(&demo_mbox, 22);
+    task_yield();
+    mbox_send(&demo_mbox, 33);
+}
+
+static void
+mbox_consumer(void)
+{
+    uint64_t a;
+    uint64_t b;
+    uint64_t c;
+
+    a = mbox_recv(&demo_mbox);
+    b = mbox_recv(&demo_mbox);
+    c = mbox_recv(&demo_mbox);
+    if (a == 11 && b == 22 && c == 33) {
+        serial_puts("[M0.26] order ok\n");
+    } else {
+        serial_puts("[M0.26] order failed\n");
+    }
+}
+
+void
+task_mbox_demo(void)
+{
+    struct task shell;
+
+    shell.id = 0;
+    shell.fn = 0;
+    shell.turns = 0;
+    shell.stack = 0;
+    shell.wake_tick = 0;
+    shell.sleeping = 0;
+    shell.waiting = 0;
+    shell.wait_obj = 0;
+    shell.wait_for = 0;
+    shell.next = &shell;
+    shell_task = &shell;
+    current = &shell;
+    demo_mbox.full = 0;
+    demo_mbox.value = 0;
+
+    serial_puts("[M0.26] mailbox\n");
+    if (task_spawn(mbox_consumer) == 0 || task_spawn(mbox_producer) == 0) {
+        serial_puts("[ERROR] mbox spawn failed.\n");
+        shell_task = 0;
+        current = 0;
+        return;
+    }
+
+    while (shell.next != &shell) {
+        task_yield();
+    }
+    task_reap();
+    shell_task = 0;
+    current = 0;
+    serial_puts("[M0.26] mailbox demo done\n");
 }
