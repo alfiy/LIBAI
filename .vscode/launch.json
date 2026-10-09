@@ -1,0 +1,30 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Libai kernel",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/libai-kernel.elf",
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "miDebuggerPath": "/usr/bin/gdb",
+            "miDebuggerServerAddress": "localhost:1234",
+            "preLaunchTask": "qemu-gdb",
+            "setupCommands": [
+                {
+                    "text": "set architecture i386:x86-64",
+                    "ignoreFailures": false
+                },
+                {
+                    "text": "set pagination off",
+                    "ignoreFailures": true
+                },
+                {
+                    "text": "file ${workspaceFolder}/build/libai-kernel.elf",
+                    "ignoreFailures": false
+                }
+            ]
+        }
+    ]
+}

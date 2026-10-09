@@ -54,7 +54,8 @@ task_reap(void)
  * return address into rbp and jump to garbage.
  */
 __attribute__((naked)) static void
-task_switch(struct task *prev, struct task *next)
+task_switch(struct task *prev __attribute__((unused)),
+            struct task *next __attribute__((unused)))
 {
     __asm__ volatile (
         "movq %rsi, current(%rip)\n\t"

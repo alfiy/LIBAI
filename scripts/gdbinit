@@ -1,0 +1,7 @@
+set architecture i386:x86-64
+set pagination off
+set confirm off
+target remote :1234
+file build/libai-kernel.elf
+break libai_kernel_entry
+echo \nLibai symbols loaded. continue to reach the kernel entry.\n

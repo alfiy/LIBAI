@@ -1,0 +1,40 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build",
+            "type": "shell",
+            "command": "make",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "qemu",
+            "type": "shell",
+            "command": "make qemu",
+            "dependsOn": ["build"],
+            "problemMatcher": []
+        },
+        {
+            "label": "qemu-gdb",
+            "type": "shell",
+            "command": "make qemu-gdb",
+            "dependsOn": ["build"],
+            "isBackground": true,
+            "problemMatcher": {
+                "owner": "qemu",
+                "pattern": {
+                    "regexp": "^$"
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": ".",
+                    "endsPattern": "gdbstub ready"
+                }
+            }
+        }
+    ]
+}

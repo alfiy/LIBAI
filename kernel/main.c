@@ -541,7 +541,6 @@ after_higher_half(void)
         uint64_t rsp;
         uint64_t high_rsp;
         uint64_t stack_phys = kernel_stack_base;
-        volatile uint32_t *slot;
 
         __asm__ volatile ("mov %%rsp, %0" : "=r"(rsp));
         high_rsp = vmm_to_higher(rsp);
