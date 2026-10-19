@@ -29,7 +29,7 @@ LOADER_CFLAGS := -Iinclude -I/usr/include/efi -I/usr/include/efi/x86_64 \
 	-fno-stack-protector -fpic -fshort-wchar -mno-red-zone \
 	-DEFI_FUNCTION_WRAPPER -g -O0 -Wall -Wextra
 
-.PHONY: all kernel loader esp qemu qemu-gdb gdb clean
+.PHONY: all kernel loader esp qemu qemu-gdb gdb quit clean
 
 all: esp $(BUILD)/esp.img
 
@@ -76,20 +76,32 @@ $(BUILD)/esp.img: $(BUILD)/BOOTX64.EFI $(BUILD)/libai-kernel.elf
 	mcopy -i $@ $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
 	mcopy -i $@ $(BUILD)/libai-kernel.elf ::/libai-kernel.elf
 
+QEMU_CTRL := \
+	-chardev stdio,id=serial0,mux=on,signal=off \
+	-serial chardev:serial0 \
+	-mon chardev=serial0,mode=readline \
+	-chardev socket,id=keys,host=127.0.0.1,port=45454,server=on,wait=off,telnet=on \
+	-mon chardev=keys,mode=readline \
+	-chardev socket,id=quitmon,host=127.0.0.1,port=45455,server=on,wait=off,telnet=on \
+	-mon chardev=quitmon,mode=readline
+
 qemu: $(BUILD)/esp.img
+	@echo "退出: 本窗口 Ctrl-A 松开后按 x；或另开终端 make quit（不用关 telnet）"
 	qemu-system-x86_64 -machine q35 -m 512M -nographic \
-		-serial mon:stdio \
-		-monitor telnet:127.0.0.1:45454,server,nowait \
+		$(QEMU_CTRL) \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF) \
 		-drive format=raw,file=$(BUILD)/esp.img
 
 qemu-gdb: $(BUILD)/esp.img
 	@echo "gdbstub ready"
+	@echo "退出: 本窗口 Ctrl-A 松开后按 x；或另开终端 make quit（不用关 telnet）"
 	qemu-system-x86_64 -machine q35 -m 512M -nographic \
-		-serial mon:stdio -s -S \
-		-monitor telnet:127.0.0.1:45454,server,nowait \
+		-s -S $(QEMU_CTRL) \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF) \
 		-drive format=raw,file=$(BUILD)/esp.img
+
+quit:
+	python3 -c 'import socket,time; s=socket.create_connection(("127.0.0.1",45455),2); time.sleep(0.2); s.sendall(b"quit\r\n"); time.sleep(0.3); s.close()'
 
 gdb: kernel
 	gdb -x scripts/gdbinit $(BUILD)/libai-kernel.elf

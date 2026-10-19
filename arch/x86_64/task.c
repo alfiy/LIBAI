@@ -753,3 +753,159 @@ task_mbox_demo(void)
     current = 0;
     serial_puts("[M0.26] mailbox demo done\n");
 }
+
+#define QUEUE_CAP 4
+
+struct libai_queue {
+    uint64_t slot[QUEUE_CAP];
+    uint64_t head;
+    uint64_t tail;
+    uint64_t count;
+};
+
+static struct libai_queue demo_queue;
+
+static void
+queue_wake(struct libai_queue *q, int reason)
+{
+    struct task *scan = shell_task;
+
+    if (scan == 0) {
+        return;
+    }
+    do {
+        if (scan->waiting && scan->wait_obj == q && scan->wait_for == reason) {
+            scan->waiting = 0;
+            scan->wait_obj = 0;
+            scan->wait_for = 0;
+            serial_puts("[M0.27] wake id=");
+            serial_print_u64(scan->id);
+            serial_puts(reason == MBOX_WANT_DATA ? " for data\n" : " for space\n");
+            return;
+        }
+        scan = scan->next;
+    } while (scan != shell_task);
+}
+
+static void
+queue_send(struct libai_queue *q, uint64_t value)
+{
+    while (q->count == QUEUE_CAP) {
+        current->wait_obj = q;
+        current->wait_for = MBOX_WANT_SPACE;
+        current->waiting = 1;
+        serial_puts("[M0.27] id=");
+        serial_print_u64(current->id);
+        serial_puts(" blocks, queue full count=");
+        serial_print_u64(q->count);
+        serial_puts("\n");
+        task_yield();
+    }
+    q->slot[q->tail] = value;
+    q->tail = (q->tail + 1) % QUEUE_CAP;
+    q->count++;
+    serial_puts("[M0.27] sent ");
+    serial_print_u64(value);
+    serial_puts(" tail=");
+    serial_print_u64(q->tail);
+    serial_puts(" count=");
+    serial_print_u64(q->count);
+    serial_puts("\n");
+    queue_wake(q, MBOX_WANT_DATA);
+}
+
+static uint64_t
+queue_recv(struct libai_queue *q)
+{
+    uint64_t value;
+
+    while (q->count == 0) {
+        current->wait_obj = q;
+        current->wait_for = MBOX_WANT_DATA;
+        current->waiting = 1;
+        serial_puts("[M0.27] id=");
+        serial_print_u64(current->id);
+        serial_puts(" blocks, queue empty\n");
+        task_yield();
+    }
+    value = q->slot[q->head];
+    q->head = (q->head + 1) % QUEUE_CAP;
+    q->count--;
+    serial_puts("[M0.27] recv ");
+    serial_print_u64(value);
+    serial_puts(" head=");
+    serial_print_u64(q->head);
+    serial_puts(" count=");
+    serial_print_u64(q->count);
+    serial_puts("\n");
+    queue_wake(q, MBOX_WANT_SPACE);
+    return value;
+}
+
+static void
+queue_producer(void)
+{
+    uint64_t i;
+
+    for (i = 1; i <= 6; i++) {
+        queue_send(&demo_queue, i);
+    }
+}
+
+static void
+queue_consumer(void)
+{
+    uint64_t i;
+    uint64_t got;
+    int ok = 1;
+
+    for (i = 1; i <= 6; i++) {
+        got = queue_recv(&demo_queue);
+        if (got != i) {
+            ok = 0;
+        }
+    }
+    serial_puts(ok ? "[M0.27] order ok\n" : "[M0.27] order failed\n");
+}
+
+void
+task_queue_demo(void)
+{
+    struct task shell;
+    uint64_t i;
+
+    shell.id = 0;
+    shell.fn = 0;
+    shell.turns = 0;
+    shell.stack = 0;
+    shell.wake_tick = 0;
+    shell.sleeping = 0;
+    shell.waiting = 0;
+    shell.wait_obj = 0;
+    shell.wait_for = 0;
+    shell.next = &shell;
+    shell_task = &shell;
+    current = &shell;
+    demo_queue.head = 0;
+    demo_queue.tail = 0;
+    demo_queue.count = 0;
+    for (i = 0; i < QUEUE_CAP; i++) {
+        demo_queue.slot[i] = 0;
+    }
+
+    serial_puts("[M0.27] ring queue cap=4\n");
+    if (task_spawn(queue_consumer) == 0 || task_spawn(queue_producer) == 0) {
+        serial_puts("[ERROR] queue spawn failed.\n");
+        shell_task = 0;
+        current = 0;
+        return;
+    }
+
+    while (shell.next != &shell) {
+        task_yield();
+    }
+    task_reap();
+    shell_task = 0;
+    current = 0;
+    serial_puts("[M0.27] ring queue demo done\n");
+}

@@ -690,7 +690,7 @@ kbd_shell(void)
             if (n == 0) {
                 /* empty line */
             } else if (streq(line, "help")) {
-                serial_puts("commands: help ticks mem gdt cr3 rip win heap task preempt sleep event lock mbox user pf halt\n");
+                serial_puts("commands: help ticks mem gdt cr3 rip win heap task preempt sleep event lock mbox queue user pf halt\n");
             } else if (streq(line, "ticks")) {
                 serial_puts("ticks = ");
                 serial_print_u64(irq_ticks());
@@ -743,6 +743,8 @@ kbd_shell(void)
                 task_lock_demo();
             } else if (streq(line, "mbox")) {
                 task_mbox_demo();
+            } else if (streq(line, "queue")) {
+                task_queue_demo();
             } else if (streq(line, "user")) {
                 user_run();
                 serial_puts("[ERROR] user_run returned\n");

@@ -62,13 +62,13 @@ sendkey p
 sendkey ret
 ```
 
-`sendkey ret` 是回车。退出 QEMU 用 `Ctrl-A x`。
+`sendkey ret` 是回车。退出 QEMU 有两种方式。在运行 `make qemu` 的窗口按 `Ctrl-A`，松开后再按 `x`。如果这个组合键被终端吃掉，另开一个终端执行：
 
-壳里的命令：
-
-```text
-help ticks mem gdt cr3 rip win heap task preempt sleep event lock mbox user pf halt
+```bash
+make quit
 ```
+
+它会向监视器端口 `127.0.0.1:45454` 发送 `quit`。发按键的 telnet 占着这个端口时，先退出 telnet，再执行 `make quit`。
 
 ## 调试
 
