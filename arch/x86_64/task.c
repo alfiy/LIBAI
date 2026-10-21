@@ -909,3 +909,120 @@ task_queue_demo(void)
     current = 0;
     serial_puts("[M0.27] ring queue demo done\n");
 }
+
+struct libai_sem {
+    uint64_t count;
+};
+
+static struct libai_sem demo_sem;
+
+static void
+sem_wake(struct libai_sem *sem)
+{
+    struct task *scan = shell_task;
+
+    if (scan == 0) {
+        return;
+    }
+    do {
+        if (scan->waiting && scan->wait_obj == sem) {
+            scan->waiting = 0;
+            scan->wait_obj = 0;
+            scan->wait_for = 0;
+            serial_puts("[M0.28] wake id=");
+            serial_print_u64(scan->id);
+            serial_puts("\n");
+            return;
+        }
+        scan = scan->next;
+    } while (scan != shell_task);
+}
+
+static void
+sem_wait(struct libai_sem *sem)
+{
+    while (sem->count == 0) {
+        current->wait_obj = sem;
+        current->wait_for = MBOX_WANT_DATA;
+        current->waiting = 1;
+        serial_puts("[M0.28] id=");
+        serial_print_u64(current->id);
+        serial_puts(" waits, count=0\n");
+        task_yield();
+    }
+    sem->count--;
+    serial_puts("[M0.28] id=");
+    serial_print_u64(current->id);
+    serial_puts(" acquired count=");
+    serial_print_u64(sem->count);
+    serial_puts("\n");
+}
+
+static void
+sem_post(struct libai_sem *sem)
+{
+    sem->count++;
+    serial_puts("[M0.28] id=");
+    serial_print_u64(current->id);
+    serial_puts(" posted count=");
+    serial_print_u64(sem->count);
+    serial_puts("\n");
+    sem_wake(sem);
+}
+
+static void
+sem_consumer(void)
+{
+    uint64_t i;
+
+    for (i = 0; i < 3; i++) {
+        sem_wait(&demo_sem);
+    }
+}
+
+static void
+sem_producer(void)
+{
+    uint64_t i;
+
+    for (i = 0; i < 3; i++) {
+        sem_post(&demo_sem);
+        task_yield();
+    }
+}
+
+void
+task_sem_demo(void)
+{
+    struct task shell;
+
+    shell.id = 0;
+    shell.fn = 0;
+    shell.turns = 0;
+    shell.stack = 0;
+    shell.wake_tick = 0;
+    shell.sleeping = 0;
+    shell.waiting = 0;
+    shell.wait_obj = 0;
+    shell.wait_for = 0;
+    shell.next = &shell;
+    shell_task = &shell;
+    current = &shell;
+    demo_sem.count = 0;
+
+    serial_puts("[M0.28] counting semaphore\n");
+    if (task_spawn(sem_consumer) == 0 || task_spawn(sem_producer) == 0) {
+        serial_puts("[ERROR] sem spawn failed.\n");
+        shell_task = 0;
+        current = 0;
+        return;
+    }
+
+    while (shell.next != &shell) {
+        task_yield();
+    }
+    task_reap();
+    shell_task = 0;
+    current = 0;
+    serial_puts("[M0.28] semaphore demo done\n");
+}

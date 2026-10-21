@@ -10,6 +10,8 @@ void task_event_demo(void);
 void task_lock_demo(void);
 void task_mbox_demo(void);
 void task_queue_demo(void);
+void task_sem_demo(void);
 void task_preempt_tick(void);
 
 #endif
+
