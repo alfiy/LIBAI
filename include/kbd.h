@@ -10,6 +10,7 @@
 void kbd_init(void);
 void kbd_interrupt(void);
 int kbd_pop(uint8_t *scancode);
+int kbd_read(uint8_t *scancode);
 char kbd_scancode_to_ascii(uint8_t scancode);
 
 #endif

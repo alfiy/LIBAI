@@ -1,18 +1,23 @@
 #include "kbd.h"
 #include "io.h"
+#include "serial.h"
 
 #define KBD_DATA 0x60
-#define KBD_BUF_SIZE 32
+#define KBD_CAP  32
 
-static uint8_t kbd_buf[KBD_BUF_SIZE];
+static uint8_t kbd_slot[KBD_CAP];
 static volatile uint64_t kbd_head;
 static volatile uint64_t kbd_tail;
+static volatile uint64_t kbd_count;
+static volatile int kbd_waiting;
 
 void
 kbd_init(void)
 {
     kbd_head = 0;
     kbd_tail = 0;
+    kbd_count = 0;
+    kbd_waiting = 0;
 
     /* Drop any stale byte so the first IRQ is a real key. */
     (void)inb(KBD_DATA);
@@ -22,26 +27,46 @@ void
 kbd_interrupt(void)
 {
     uint8_t sc = inb(KBD_DATA);
-    uint64_t next = kbd_head + 1;
 
-    if ((next - kbd_tail) > KBD_BUF_SIZE) {
+    if (kbd_count == KBD_CAP) {
         return;
     }
 
-    kbd_buf[kbd_head % KBD_BUF_SIZE] = sc;
-    kbd_head = next;
+    kbd_slot[kbd_tail] = sc;
+    kbd_tail = (kbd_tail + 1) % KBD_CAP;
+    kbd_count++;
+    if (kbd_waiting) {
+        serial_puts("[M0.29] irq push count=");
+        serial_print_u64(kbd_count);
+        serial_puts("\n");
+    }
 }
 
 int
 kbd_pop(uint8_t *scancode)
 {
-    if (kbd_tail == kbd_head) {
+    if (kbd_count == 0) {
         return 0;
     }
 
-    *scancode = kbd_buf[kbd_tail % KBD_BUF_SIZE];
-    kbd_tail++;
+    *scancode = kbd_slot[kbd_head];
+    kbd_head = (kbd_head + 1) % KBD_CAP;
+    kbd_count--;
     return 1;
+}
+
+int
+kbd_read(uint8_t *scancode)
+{
+    while (kbd_count == 0) {
+        if (!kbd_waiting) {
+            kbd_waiting = 1;
+            serial_puts("[M0.29] queue empty, shell sleeping\n");
+        }
+        __asm__ volatile ("sti; hlt");
+    }
+    kbd_waiting = 0;
+    return kbd_pop(scancode);
 }
 
 char

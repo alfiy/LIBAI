@@ -657,6 +657,7 @@ kbd_shell(void)
     char ch;
 
     serial_puts("\n");
+    serial_puts("[M0.29] keyboard queue, cap=32\n");
     serial_puts("[M0.12] Libai shell. Type help + Enter.\n");
     serial_puts("[M0.12] Keys: telnet 127.0.0.1 45454 then sendkey <key>\n");
     serial_puts("[M0.12] Enter is: sendkey ret\n");
@@ -665,8 +666,7 @@ kbd_shell(void)
     irq_enable();
 
     for (;;) {
-        if (!kbd_pop(&sc)) {
-            __asm__ volatile ("hlt");
+        if (!kbd_read(&sc)) {
             continue;
         }
 
