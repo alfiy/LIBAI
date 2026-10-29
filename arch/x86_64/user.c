@@ -5,29 +5,30 @@
 #include "serial.h"
 
 /*
- * M0.30 user program. Each syscall is rax=number, rdi=arg0, int $0x80.
- *   write 'H', write 'i', write '\n', yield, sleep 10, read, exit
+ * M0.31 user program.
+ *   write(string_at_page+0x80, 3)   immediate patched at install
+ *   write(0x100000, 3)              not a user page, must be rejected
+ *   exit
+ *
+ *   mov $1, %rax
+ *   mov $imm32, %rdi
+ *   mov $3, %rsi
+ *   int $0x80
  */
 static const uint8_t prog[] = {
     0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00,
-    0x48, 0xC7, 0xC7, 'H',  0x00, 0x00, 0x00,
+    0x48, 0xC7, 0xC7, 0x00, 0x00, 0x00, 0x00,
+    0x48, 0xC7, 0xC6, 0x03, 0x00, 0x00, 0x00,
     0xCD, 0x80,
     0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00,
-    0x48, 0xC7, 0xC7, 'i',  0x00, 0x00, 0x00,
-    0xCD, 0x80,
-    0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00,
-    0x48, 0xC7, 0xC7, '\n', 0x00, 0x00, 0x00,
-    0xCD, 0x80,
-    0x48, 0xC7, 0xC0, 0x03, 0x00, 0x00, 0x00,
-    0xCD, 0x80,
-    0x48, 0xC7, 0xC0, 0x02, 0x00, 0x00, 0x00,
-    0x48, 0xC7, 0xC7, 0x0A, 0x00, 0x00, 0x00,
-    0xCD, 0x80,
-    0x48, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00,
+    0x48, 0xC7, 0xC7, 0x00, 0x00, 0x10, 0x00,
+    0x48, 0xC7, 0xC6, 0x03, 0x00, 0x00, 0x00,
     0xCD, 0x80,
     0x48, 0xC7, 0xC0, 0x04, 0x00, 0x00, 0x00,
     0xCD, 0x80,
 };
+#define USER_STRING_OFF 0x80
+#define USER_PTR_PATCH  10
 static uint64_t user_code_page;
 static uint64_t user_stack_page;
 static uint64_t saved_kernel_rsp0;
@@ -64,6 +65,16 @@ user_install_program(void)
     for (i = 0; i < sizeof(prog); i++) {
         dst[i] = prog[i];
     }
+    dst[USER_STRING_OFF + 0] = 'H';
+    dst[USER_STRING_OFF + 1] = 'i';
+    dst[USER_STRING_OFF + 2] = '\n';
+    {
+        uint32_t str = (uint32_t)(user_code_page + USER_STRING_OFF);
+        dst[USER_PTR_PATCH + 0] = (uint8_t)(str);
+        dst[USER_PTR_PATCH + 1] = (uint8_t)(str >> 8);
+        dst[USER_PTR_PATCH + 2] = (uint8_t)(str >> 16);
+        dst[USER_PTR_PATCH + 3] = (uint8_t)(str >> 24);
+    }
 
     if (!user_space_ready) {
         if (!vmm_create_user_space(&user_space)) {
@@ -92,6 +103,28 @@ user_install_program(void)
     serial_puts("\n");
 
     return 1;
+}
+
+int
+user_range_ok(uint64_t addr, uint64_t len)
+{
+    uint64_t end;
+
+    if (len == 0 || len > 256 || addr + len < addr) {
+        return 0;
+    }
+    end = addr + len;
+    if (user_code_page != 0 &&
+        addr >= user_code_page &&
+        end <= user_code_page + LIBAI_PAGE_SIZE) {
+        return 1;
+    }
+    if (user_stack_page != 0 &&
+        addr >= user_stack_page &&
+        end <= user_stack_page + LIBAI_PAGE_SIZE) {
+        return 1;
+    }
+    return 0;
 }
 
 int

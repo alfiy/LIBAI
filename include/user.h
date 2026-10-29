@@ -10,6 +10,7 @@
 void user_init(uint64_t kernel_rsp0);
 void user_run(void);
 int user_on_syscall(uint64_t rax, uint64_t cs);
+int user_range_ok(uint64_t addr, uint64_t len);
 uint64_t user_kernel_rip(void);
 uint64_t user_kernel_rsp(void);
 

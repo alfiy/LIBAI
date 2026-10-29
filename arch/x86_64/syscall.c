@@ -2,6 +2,31 @@
 #include "irq.h"
 #include "kbd.h"
 #include "serial.h"
+#include "user.h"
+
+static int
+copy_from_user(char *kdst, uint64_t usrc, uint64_t len)
+{
+    uint64_t i;
+
+    if (!user_range_ok(usrc, len)) {
+        serial_puts("[M0.31] reject ptr=");
+        serial_print_hex(usrc);
+        serial_puts(" len=");
+        serial_print_u64(len);
+        serial_puts("\n");
+        return -1;
+    }
+    for (i = 0; i < len; i++) {
+        kdst[i] = ((const char *)(uintptr_t)usrc)[i];
+    }
+    serial_puts("[M0.31] copied ");
+    serial_print_u64(len);
+    serial_puts(" from ");
+    serial_print_hex(usrc);
+    serial_puts("\n");
+    return 0;
+}
 
 typedef int64_t (*libai_sys_fn)(uint64_t arg0, uint64_t arg1, uint64_t arg2);
 
@@ -33,10 +58,21 @@ sys_read(uint64_t arg0, uint64_t arg1, uint64_t arg2)
 static int64_t
 sys_write(uint64_t arg0, uint64_t arg1, uint64_t arg2)
 {
-    (void)arg1;
+    char buf[64];
+    uint64_t i;
+
     (void)arg2;
-    serial_putchar((char)arg0);
-    return 1;
+    if (arg1 == 0 || arg1 > sizeof(buf)) {
+        serial_puts("[M0.31] write bad length\n");
+        return -1;
+    }
+    if (copy_from_user(buf, arg0, arg1) != 0) {
+        return -1;
+    }
+    for (i = 0; i < arg1; i++) {
+        serial_putchar(buf[i]);
+    }
+    return (int64_t)arg1;
 }
 
 static int64_t
