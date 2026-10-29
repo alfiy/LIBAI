@@ -17,7 +17,8 @@ KERNEL_SRCS := \
 	arch/x86_64/task.c \
 	arch/x86_64/kbd.c \
 	arch/x86_64/gdt.c \
-	arch/x86_64/user.c
+	arch/x86_64/user.c \
+	arch/x86_64/syscall.c
 
 KERNEL_OBJS := $(patsubst %.c,$(BUILD)/%.o,$(KERNEL_SRCS))
 
@@ -68,6 +69,8 @@ $(BUILD)/BOOTX64.EFI: $(BUILD)/loader.so
 		--target=efi-app-x86_64 $< $@
 
 $(BUILD)/esp.img: $(BUILD)/BOOTX64.EFI $(BUILD)/libai-kernel.elf
+	@command -v mkfs.vfat >/dev/null || { echo "缺少 dosfstools: sudo apt install dosfstools mtools"; exit 1; }
+	@command -v mmd >/dev/null || { echo "缺少 mtools: sudo apt install dosfstools mtools"; exit 1; }
 	rm -f $@
 	dd if=/dev/zero of=$@ bs=1M count=32 status=none
 	mkfs.vfat -F 16 $@ >/dev/null

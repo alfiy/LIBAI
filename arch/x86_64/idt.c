@@ -5,6 +5,7 @@
 #include "serial.h"
 #include "gdt.h"
 #include "user.h"
+#include "syscall.h"
 #include "vmm.h"
 #include "task.h"
 
@@ -108,13 +109,17 @@ isr_dispatch(struct IsrFrame *frame)
     }
 
     if (frame->vector == LIBAI_INT_SYSCALL) {
-        if (user_on_syscall(frame->rax, frame->cs)) {
+        int64_t ret = 0;
+
+        if (syscall_dispatch(frame->rax, frame->rdi, frame->rsi,
+                             frame->rdx, &ret)) {
             frame->rip = user_kernel_rip();
             frame->cs = LIBAI_GDT_KERNEL_CS;
             frame->ss = LIBAI_GDT_KERNEL_DS;
             frame->rsp = user_kernel_rsp();
             frame->rflags = 0x202;
         }
+        frame->rax = (uint64_t)ret;
         return;
     }
 
